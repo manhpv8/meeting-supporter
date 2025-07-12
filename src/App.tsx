@@ -123,6 +123,7 @@ class TranscriptionWebSocketClient {
     }
     if (!this.isInitialConfigSent) this.sendInitialConfig();
     this.socket.send(audioData);
+    // console.log(`[WS Client] Sent ${audioData.byteLength} bytes of audio data.`); // Commented out to prevent excessive logging for every small chunk
     return true;
   }
 
@@ -320,7 +321,8 @@ const AudioProcessorManager = {
           onSpeechEndCallback();
           console.log('[AudioProcessor] VAD: Speech Ended.');
 
-          if (this.speechStartTimeout) {
+          // Crucial: Ensure buffered audio (post-speech) is sent at VAD end
+          if (this.speechStartTimeout) { // If speech ended before pre-speech buffer was sent
             clearTimeout(this.speechStartTimeout);
             this.speechStartTimeout = null;
             const preSpeechBuffer = this.getBufferedAudio();
@@ -328,7 +330,7 @@ const AudioProcessorManager = {
             this.processAndSendAudio(combinedAudio, targetSampleRate, onAudioChunkReady);
             this.tempBuffer = [];
             console.log('[AudioProcessor] Sent remaining temp buffer on speech end (early).');
-          } else if (this.postDelayBuffer.length > 0) {
+          } else if (this.postDelayBuffer.length > 0) { // If speech ended after continuous sending
             const combinedPostDelay = this.postDelayBuffer.reduce((acc, chunk) => {
                 const result = new Float32Array(acc.length + chunk.length);
                 result.set(acc, 0);
@@ -388,8 +390,8 @@ const AudioProcessorManager = {
               }
             }
           } else {
-            // Log for debugging: why is VAD not active when audio is coming from worklet?
-            // This might happen right at the start before VAD fully activates, or if no speech is detected.
+            // This warning is fine if it happens only very briefly at the start or end of speech.
+            // It just means VAD hasn't confirmed speech is active yet, so the audio isn't sent.
             // console.warn('[AudioProcessor] VAD not actively detecting speech. Buffering or skipping audio send (onmessage).'); 
           }
         }
@@ -411,6 +413,9 @@ const AudioProcessorManager = {
     if (audioData.length === 0) return;
     const resampledAudio = await this.resampleAudio(audioData, this.nativeSampleRate || 44100, targetSampleRate);
     const formattedData = this.formatAudioData(resampledAudio);
+    
+    // Explicitly log when audio data is prepared and sent to the WebSocket client
+    console.log(`[AudioProcessor] Prepared ${formattedData.byteLength} bytes of audio for WS client.`); 
     onAudioChunkReady(formattedData);
   },
 
@@ -503,6 +508,7 @@ function App() {
     }
     try {
       const data = JSON.parse(messageData);
+      // Log the raw JSON data received from the STT server
       console.log('[STT Server Message] Received data:', JSON.stringify(data).slice(0, 200) + (JSON.stringify(data).length > 200 ? '...' : ''));
 
       if (data.segments && Array.isArray(data.segments)) {
@@ -513,7 +519,7 @@ function App() {
             if (seg.completed) {
                 if (!transcriptQueue.current.includes(seg.text)) {
                     transcriptQueue.current.push(seg.text);
-                    console.log(`[STT Segments] Finalized: "${seg.text}"`); // Explicit log for finalized transcription
+                    console.log(`[STT Segments] Finalized Transcription: "${seg.text}"`); // Explicit log for finalized transcription
                 }
             } else {
                 newCurrentText = seg.text;
@@ -539,11 +545,11 @@ function App() {
 
         setCurrentText(newCurrentText);
         if (newCurrentText) {
-            console.log(`[STT Segments] Interim: "${newCurrentText}"`); // Explicit log for interim transcription
+            console.log(`[STT Segments] Interim Transcription: "${newCurrentText}"`); // Explicit log for interim transcription
         }
         
       } else if (data.type === 'transcription' && data.text) {
-        console.log(`[STT Simple] Received: "${data.text}"`); // Explicit log for simple transcription
+        console.log(`[STT Simple] Received Full Transcription: "${data.text}"`); // Explicit log for simple transcription
         setTranscript(prev => {
           const newSegment: TranscriptSegment = {
             id: `${Date.now()}-${Math.random()}`,
