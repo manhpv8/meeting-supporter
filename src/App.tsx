@@ -123,7 +123,6 @@ class TranscriptionWebSocketClient {
     }
     if (!this.isInitialConfigSent) this.sendInitialConfig();
     this.socket.send(audioData);
-    // console.log(`[WS Client] Sent ${audioData.byteLength} bytes of audio data.`); // Commented out to prevent excessive logging for every small chunk
     return true;
   }
 
@@ -303,16 +302,17 @@ const AudioProcessorManager = {
           console.log('[AudioProcessor] VAD: Speech Started.');
 
           this.speechStartTimeout = setTimeout(() => {
-            if (currentVadInstance?.speech?.active) {
+            // FIX: Remove check, as onSpeechStart already confirms speech initiation
+            // if (currentVadInstance?.speech?.active) {
               const preSpeechBuffer = this.getBufferedAudio();
               const combinedAudio = this.combineBuffers(preSpeechBuffer, this.tempBuffer);
               this.processAndSendAudio(combinedAudio, targetSampleRate, onAudioChunkReady);
               this.lastSendTime = Date.now();
               this.tempBuffer = [];
               console.log('[AudioProcessor] Sent pre-speech buffer after timeout.');
-            } else {
-                console.warn('[AudioProcessor] VAD speech.active was undefined/false in onSpeechStart timeout. Will not send pre-speech buffer.');
-            }
+            // } else {
+            //     console.warn('[AudioProcessor] VAD speech.active was undefined/false in onSpeechStart timeout. Will not send pre-speech buffer.');
+            // }
             this.speechStartTimeout = null;
           }, 500);
         },
@@ -367,9 +367,11 @@ const AudioProcessorManager = {
           const audioData = event.data.audioData as Float32Array;
           this.appendToBuffer(audioData);
 
-          // This is the primary point where we send audio.
-          // It should send whenever the VAD instance indicates active speech.
-          if (currentVadInstance?.speech?.active) { 
+          // We rely on VAD's onSpeechStart/onSpeechEnd for primary sending logic.
+          // This onmessage is for continuous buffering/sending during active speech.
+          // The conditional chaining '?.speech?.active' is good here to prevent TypeErrors
+          // if VAD hasn't fully initialized its 'speech' property, but it's *not* a guarantee of speech activity.
+          if (currentVadInstance?.speech?.active) { // Keep this check for safety, but primary sends are from VAD callbacks
             if (this.speechStartTimeout) {
               this.tempBuffer.push(audioData.slice());
             } else {
@@ -377,7 +379,8 @@ const AudioProcessorManager = {
               const totalSamples = this.postDelayBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
               const elapsedTime = this.lastSendTime ? (Date.now() - this.lastSendTime) / 1000 : 0;
 
-              if (totalSamples >= (this.nativeSampleRate || 16000) * 0.6 || elapsedTime >= 0.6) {
+              // Send smaller chunks continuously during active speech
+              if (totalSamples >= (this.nativeSampleRate || 16000) * 0.6 || elapsedTime >= 0.6) { // Send every ~0.6 seconds or when enough data
                 const combinedPostDelay = this.postDelayBuffer.reduce((acc, chunk) => {
                     const result = new Float32Array(acc.length + chunk.length);
                     result.set(acc, 0);
@@ -389,10 +392,6 @@ const AudioProcessorManager = {
                 this.lastSendTime = Date.now();
               }
             }
-          } else {
-            // This warning is fine if it happens only very briefly at the start or end of speech.
-            // It just means VAD hasn't confirmed speech is active yet, so the audio isn't sent.
-            // console.warn('[AudioProcessor] VAD not actively detecting speech. Buffering or skipping audio send (onmessage).'); 
           }
         }
       };
@@ -416,7 +415,7 @@ const AudioProcessorManager = {
     
     // Explicitly log when audio data is prepared and sent to the WebSocket client
     console.log(`[AudioProcessor] Prepared ${formattedData.byteLength} bytes of audio for WS client.`); 
-    onAudioChunkReady(formattedData);
+    onAudioChunkReady(formattedData); // This is where the formatted audio chunk is passed to the WS client.
   },
 
   releaseAudioResources() {
