@@ -26,15 +26,15 @@ function App() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [isTyping, setIsTyping] = useState(false);
+  const [isTyping, setIsTyping] = useState(false); // Used for user chat response loading
   const [showSettings, setShowSettings] = useState(false);
   const [suggestionPrompt, setSuggestionPrompt] = useState<string>(defaultSuggestionPrompt);
   const [geminiApiKey, setGeminiApiKey] = useState<string>('');
   const [geminiModel, setGeminiModel] = useState<string>(defaultGeminiModel);
   const [lastSummaryLength, setLastSummaryLength] = useState(0);
-  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false); // Loading state for auto summary
   const [lastSuggestionLength, setLastSuggestionLength] = useState(0);
-  const [isGeneratingSuggestion, setIsGeneratingSuggestion] = useState(false);
+  const [isGeneratingSuggestion, setIsGeneratingSuggestion] = useState(false); // Loading state for auto suggestion
 
   const recognitionRef = useRef<any>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -94,7 +94,7 @@ function App() {
         }
       };
     }
-  }, [isRecording]); // Removed transcript from dependency array to avoid stale closures with setTranscript callback
+  }, [isRecording]);
 
   useEffect(() => {
     if (transcriptRef.current) {
@@ -106,7 +106,7 @@ function App() {
     if (chatRef.current) {
       chatRef.current.scrollTop = chatRef.current.scrollHeight;
     }
-  }, [chatMessages]);
+  }, [chatMessages, isTyping, isGeneratingSummary, isGeneratingSuggestion]); // Add loading states to chat scroll dependency
 
   const startRecording = () => {
     if (recognitionRef.current) {
@@ -142,7 +142,7 @@ function App() {
     const fullTranscription = segments.map(s => s.text).join(' ');
     const totalWords = fullTranscription.split(' ').length;
 
-    // Generate suggestions every 50 words or every 5 segments
+    // Generate suggestions every 5 words or every 2 segments for more frequent updates
     const shouldGenerateSuggestion =
       totalWords >= lastSuggestionLength + 5 ||
       (segments.length >= 2 && segments.length % 2 === 0);
@@ -176,7 +176,7 @@ ${fullTranscription}`;
         setLastSuggestionLength(totalWords); // Update length after successful generation
       } catch (error) {
         console.error('Auto suggestion error:', error);
-        // Don't show error messages for auto suggestions to avoid spam
+        // Don't show error messages for auto suggestions to avoid spam in chat
       } finally {
         setIsGeneratingSuggestion(false);
       }
@@ -215,7 +215,7 @@ ${fullTranscription}`;
     const fullTranscription = segments.map(s => s.text).join(' ');
     const totalWords = fullTranscription.split(' ').length;
 
-    // Generate summary every 100 words or when transcript length doubles
+    // Generate summary every 100 words or every 8 segments
     const shouldGenerateSummary =
       totalWords >= lastSummaryLength + 100 ||
       (segments.length >= 10 && segments.length % 8 === 0);
@@ -295,14 +295,6 @@ ${fullTranscription}`;
     return data.candidates[0].content.parts[0].text;
   };
 
-  // Removed all keyword-based summary and suggestion generation functions:
-  // generateComprehensiveSummary, generateKeyPoints, generateActionItemsSummary,
-  // generateInsightsSummary, generateDecisionsSummary, generateFollowUpsSummary,
-  // generateQuestionsSummary, generateGeneralSummary, generateRealtimeSuggestions,
-  // generateSimpleSuggestions, generatePromptBasedSuggestion, generateQuestions,
-  // generateActionItems, generateSummary, generateInsights, generateFollowUps,
-  // generateCustomSuggestion, extractKeyTopics
-
   const handleChatSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
@@ -316,7 +308,7 @@ ${fullTranscription}`;
 
     setChatMessages(prev => [...prev, userMessage]);
     setChatInput('');
-    setIsTyping(true);
+    setIsTyping(true); // Set isTyping to true when user sends a message
 
     // Generate AI response using Gemini API
     generateChatResponse(chatInput, transcript);
@@ -362,7 +354,7 @@ Please provide a helpful, accurate response based on the transcription content. 
       };
       setChatMessages(prev => [...prev, errorMessage]);
     } finally {
-      setIsTyping(false);
+      setIsTyping(false); // Set isTyping to false once response is received or error occurs
     }
   };
 
@@ -411,12 +403,12 @@ Please provide a helpful, accurate response based on the transcription content. 
               </button>
 
               <button
-                onClick={clearAll} // Changed to clearAll
-                disabled={transcript.length === 0 && chatMessages.length === 0} // Disable if both empty
+                onClick={clearAll}
+                disabled={transcript.length === 0 && chatMessages.length === 0}
                 className="flex items-center space-x-2 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white rounded-lg font-medium transition-all disabled:cursor-not-allowed"
               >
                 <Trash2 className="h-4 w-4" />
-                <span>Clear All</span> {/* Changed text to Clear All */}
+                <span>Clear All</span>
               </button>
 
               <button
@@ -581,6 +573,7 @@ Please provide a helpful, accurate response based on the transcription content. 
                     </div>
                   ))
                 )}
+                {/* Unified Loading/Analyzing Message */}
                 {(isTyping || isGeneratingSummary || isGeneratingSuggestion) && (
                   <div className="flex justify-start">
                     <div className="flex items-start space-x-2 max-w-[80%]">
@@ -589,8 +582,11 @@ Please provide a helpful, accurate response based on the transcription content. 
                       </div>
                       <div className="bg-slate-100 rounded-lg px-4 py-2">
                         <div className="flex items-center space-x-2">
-                          {(isGeneratingSummary || isGeneratingSuggestion) && <span className="text-xs text-slate-600">AI thinking...</span>}
-                          {isTyping && <span className="text-xs text-slate-600">Assistant typing...</span>}
+                          <span className="text-xs text-slate-600">
+                            {isGeneratingSummary && "Generating AI summary..."}
+                            {isGeneratingSuggestion && "Generating AI suggestion..."}
+                            {isTyping && "Assistant analyzing..."}
+                          </span>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></div>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
