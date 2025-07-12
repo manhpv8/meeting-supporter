@@ -71,7 +71,7 @@ function App() {
           setTranscript(prev => {
             const updatedTranscript = [...prev, newSegment];
             generateAutoSuggestions(updatedTranscript);
-            checkAndGenerateAutoSummary(updatedTranscript);
+            checkAndGenerateAutoSummary(updatedTranscript); // This is where the summary is triggered
             return updatedTranscript;
           });
           setCurrentText('');
@@ -142,10 +142,11 @@ function App() {
     const fullTranscription = segments.map(s => s.text).join(' ');
     const totalWords = fullTranscription.split(' ').length;
 
-    // Generate suggestions every 5 words or every 2 segments for more frequent updates
+    // Generate suggestions every 10 words or every 3 segments for more frequent updates
     const shouldGenerateSuggestion =
-      totalWords >= lastSuggestionLength + 5 ||
-      (segments.length >= 2 && segments.length % 2 === 0);
+      totalWords >= lastSuggestionLength + 10 ||
+      (segments.length >= 3 && segments.length % 3 === 0);
+
 
     if (shouldGenerateSuggestion && !isGeneratingSuggestion) {
       setIsGeneratingSuggestion(true);
@@ -199,8 +200,8 @@ ${fullTranscription}`;
 
   const checkAndGenerateAutoSummary = async (segments: TranscriptSegment[]) => {
     if (!geminiApiKey.trim()) {
-      // Show message about needing API key only once
-      if (segments.length === 5 && !chatMessages.some(msg => msg.content.includes('Gemini API key'))) {
+      // Show message about needing API key only once, when transcript has some content
+      if (segments.length > 0 && !chatMessages.some(msg => msg.content.includes('Gemini API key'))) {
         const apiKeyMessage: ChatMessage = {
           id: `api-key-notice-${Date.now()}`,
           type: 'assistant',
@@ -215,19 +216,18 @@ ${fullTranscription}`;
     const fullTranscription = segments.map(s => s.text).join(' ');
     const totalWords = fullTranscription.split(' ').length;
 
-    // Generate summary every 100 words or every 8 segments
+    // Generate summary every 50 words or every 5 segments for more frequent summaries
     const shouldGenerateSummary =
-      totalWords >= lastSummaryLength + 100 ||
-      (segments.length >= 10 && segments.length % 8 === 0);
+      totalWords >= lastSummaryLength + 50 ||
+      (segments.length >= 5 && segments.length % 5 === 0);
 
     if (shouldGenerateSummary && !isGeneratingSummary) {
       setIsGeneratingSummary(true);
       try {
-        const summaryPrompt = `${suggestionPrompt}
+        // Define a specific prompt for summarization
+        const summaryPrompt = `Based on the following transcription, please provide a concise summary. Focus on the main topics discussed, any key decisions made, and important action items. Keep the summary to a maximum of 150 words.
 
-Please provide a concise summary of the current conversation (max 200 words). Focus on key points, main topics, and any conclusions or decisions.
-
-Current conversation:
+Current conversation transcription:
 ${fullTranscription}`;
 
         const summary = await callGeminiAPI(fullTranscription, summaryPrompt);
@@ -242,11 +242,11 @@ ${fullTranscription}`;
         setChatMessages(prev => [...prev, summaryMessage]);
         setLastSummaryLength(totalWords); // Update length after successful generation
       } catch (error) {
-        console.error('Gemini API error:', error);
+        console.error('Gemini API error for summary:', error);
         const errorMessage: ChatMessage = {
-          id: `error-${Date.now()}`,
+          id: `error-summary-${Date.now()}`, // Unique ID for summary error
           type: 'assistant',
-          content: `❌ **Error**: Failed to generate AI summary. Please check your API key and try again.`,
+          content: `❌ **Error Generating Summary**: Failed to generate AI summary. Please check your API key and network connection.`,
           timestamp: new Date()
         };
         setChatMessages(prev => [...prev, errorMessage]);
@@ -308,7 +308,7 @@ ${fullTranscription}`;
 
     setChatMessages(prev => [...prev, userMessage]);
     setChatInput('');
-    setIsTyping(true); // Set isTyping to true when user sends a message
+    setIsTyping(true); // Set isTyping to true when user sends a message, indicating AI processing
 
     // Generate AI response using Gemini API
     generateChatResponse(chatInput, transcript);
