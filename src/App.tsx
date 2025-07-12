@@ -81,7 +81,11 @@ function App() {
       };
 
       recognitionRef.current.onerror = (event: any) => {
-        console.error('Speech recognition error:', event.error);
+        if (event.error === 'aborted' && !isRecording) {
+          console.log('Speech recognition stopped by user');
+        } else {
+          console.error('Speech recognition error:', event.error);
+        }
       };
 
       recognitionRef.current.onend = () => {
