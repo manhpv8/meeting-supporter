@@ -21,7 +21,6 @@ interface ChatMessage {
 // Example: import * as vad from '@ricky0123/vad-web';
 // For demonstration, we'll declare it as any. Replace with actual import if available.
 import * as vad from '@ricky0123/vad-web';
-declare const vad: any; // You MUST replace this with a proper import of your VAD library
 
 
 // --- WebSocket Client Class (Moved outside App for reusability, or into a separate file) ---
