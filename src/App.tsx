@@ -1,7 +1,8 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Mic, MicOff, Download, Trash2, Search, Send, Bot, User, Lightbulb, Settings, AlertCircle } from 'lucide-react';
 import SettingsModal from './components/SettingsModal';
 
+// --- Global Type Definitions (can be moved to a types.ts file) ---
 interface TranscriptSegment {
   id: string;
   text: string;
@@ -16,13 +17,446 @@ interface ChatMessage {
   timestamp: Date;
 }
 
+// --- Placeholder for VAD library (Ensure you install and import this properly) ---
+// Example: import * as vad from '@ricky0123/vad-web';
+// For demonstration, we'll declare it as any. Replace with actual import if available.
+declare const vad: any; // You MUST replace this with a proper import of your VAD library
+
+// --- WebSocket Client Class (Moved outside App for reusability, or into a separate file) ---
+class TranscriptionWebSocketClient {
+  private socket: WebSocket | null = null;
+  public isConnected: boolean = false;
+  public isRecording: boolean = false;
+  private clientUid: string;
+  private isInitialConfigSent: boolean = false;
+  private config: any;
+  private onServerMessageCallback: (data: string | ArrayBuffer) => void;
+  private onConnectionCallback: () => void;
+  private onDisconnectionCallback: (code: number, reason: string) => void;
+  private onErrorCallback: (message: string) => void;
+
+  constructor(config: any) {
+    this.config = config;
+    this.clientUid = 'client_' + Math.random().toString(36).substr(2, 9);
+    this.onServerMessageCallback = config.onServerMessage;
+    this.onConnectionCallback = config.onConnection;
+    this.onDisconnectionCallback = config.onDisconnection;
+    this.onErrorCallback = config.onError;
+  }
+
+  private generateUID(): string {
+    return 'client_' + Math.random().toString(36).substr(2, 9);
+  }
+
+  public connect(): Promise<boolean> {
+    return new Promise((resolve, reject) => {
+      if (this.socket && (this.socket.readyState === WebSocket.OPEN || this.socket.readyState === WebSocket.CONNECTING)) {
+        resolve(true);
+        return;
+      }
+
+      const wsUrl = `wss://${this.config.host}:${this.config.port}`;
+      this.socket = new WebSocket(wsUrl);
+
+      const connectionTimeout = setTimeout(() => {
+        if (this.socket && this.socket.readyState !== WebSocket.OPEN) {
+          this.socket.close();
+          reject(new Error('Connection timeout'));
+        }
+      }, 10000); // 10 seconds timeout
+
+      this.socket.onopen = () => {
+        clearTimeout(connectionTimeout);
+        this.isConnected = true;
+        this.isInitialConfigSent = false; // Reset for new connection
+        this.sendInitialConfig();
+        if (this.onConnectionCallback) this.onConnectionCallback();
+        resolve(true);
+      };
+
+      this.socket.onmessage = (event) => {
+        if (this.onServerMessageCallback) this.onServerMessageCallback(event.data);
+      };
+
+      this.socket.onclose = (event) => {
+        clearTimeout(connectionTimeout);
+        const wasConnected = this.isConnected;
+        this.isConnected = false;
+        this.isRecording = false;
+        if (wasConnected && this.onDisconnectionCallback) {
+          this.onDisconnectionCallback(event.code, event.reason);
+        }
+      };
+
+      this.socket.onerror = (errorEvent) => {
+        clearTimeout(connectionTimeout);
+        this.isConnected = false;
+        console.error("WebSocket Error:", errorEvent); // Log the full event for debugging
+        if (this.onErrorCallback) this.onErrorCallback('WebSocket connection error');
+      };
+    });
+  }
+
+  private sendInitialConfig(): boolean {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN && !this.isInitialConfigSent) {
+      const configMessage = {
+        uid: this.clientUid,
+        language: this.config.language,
+        task: this.config.task,
+        model: this.config.model,
+        use_vad: this.config.useVad,
+        max_connection_time: this.config.maxConnectionTime
+      };
+      this.socket.send(JSON.stringify(configMessage));
+      this.isInitialConfigSent = true;
+      console.log("Sent initial config:", configMessage);
+      return true;
+    }
+    return false;
+  }
+
+  public sendAudioData(audioData: ArrayBuffer): boolean {
+    if (!this.isConnected || !this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
+    if (!this.isInitialConfigSent) this.sendInitialConfig(); // Ensure config is sent first
+    this.socket.send(audioData);
+    return true;
+  }
+
+  public endTranscription(): boolean {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      // Send "END_OF_AUDIO" as binary array if expecting TextEncoder.encode()
+      this.socket.send(new TextEncoder().encode("END_OF_AUDIO"));
+      this.isRecording = false;
+      console.log("Sent END_OF_AUDIO");
+      return true;
+    }
+    return false;
+  }
+
+  public close(): void {
+    if (this.socket) {
+      if (this.socket.readyState === WebSocket.OPEN) {
+        // Optional: send a graceful close message
+        this.socket.send(JSON.stringify({ type: 'close', uid: this.clientUid }));
+        this.socket.close(1000, "Normal closure");
+      }
+      this.socket = null;
+      this.isConnected = false;
+      this.isRecording = false;
+      this.isInitialConfigSent = false;
+      console.log("WebSocket closed.");
+    }
+  }
+}
+
+// --- Audio Processor Singleton-like Object (Adapted for React refs) ---
+// This handles microphone access, VAD, buffering, resampling, and sending audio.
+const AudioProcessorManager = {
+  audioBuffer: null as Float32Array | null,
+  bufferCapacity: null as number | null,
+  bufferIndex: 0,
+  bufferFull: false,
+  tempBuffer: [] as Float32Array[], // Buffer for speech activity detection start
+  speechStartTimeout: null as NodeJS.Timeout | null,
+  postDelayBuffer: [] as Float32Array[], // Buffer for speech activity detection end
+  lastSendTime: null as number | null,
+  nativeSampleRate: null as number | null,
+  // Reactive parts, managed by the React component using refs
+  vadInstance: null as any,
+  audioContext: null as AudioContext | null,
+  audioStream: null as MediaStream | null,
+  micSource: null as MediaStreamAudioSourceNode | null,
+  audioWorkletNode: null as AudioWorkletNode | null,
+  processorUrl: null as string | null,
+
+  initBuffer(sampleRate: number, bufferDurationSeconds: number) {
+    this.bufferCapacity = sampleRate * bufferDurationSeconds;
+    this.audioBuffer = new Float32Array(this.bufferCapacity);
+    this.bufferIndex = 0;
+    this.bufferFull = false;
+    console.log(`Initialized pre-speech buffer: ${this.bufferCapacity} samples (~${bufferDurationSeconds} seconds)`);
+  },
+
+  appendToBuffer(audioData: Float32Array) {
+    if (!this.audioBuffer || this.bufferCapacity === null) {
+      // Initialize with a default if not set, or throw error
+      console.warn("Pre-speech buffer not initialized, initializing with default.");
+      this.initBuffer(this.nativeSampleRate || 16000, 3);
+    }
+    const inputLength = audioData.length;
+    let remainingSamples = inputLength;
+    let offset = 0;
+
+    while (remainingSamples > 0) {
+      const samplesToCopy = Math.min(remainingSamples, (this.bufferCapacity || 0) - this.bufferIndex);
+      if (this.audioBuffer) { // Check if audioBuffer is not null after potential late init
+        this.audioBuffer.set(audioData.subarray(offset, offset + samplesToCopy), this.bufferIndex);
+      }
+      this.bufferIndex = (this.bufferIndex + samplesToCopy) % (this.bufferCapacity || 1);
+      if (this.bufferIndex === 0 && (this.bufferCapacity || 0) > 0) {
+        this.bufferFull = true;
+      }
+      remainingSamples -= samplesToCopy;
+      offset += samplesToCopy;
+    }
+  },
+
+  getBufferedAudio(): Float32Array {
+    if (!this.audioBuffer || this.bufferCapacity === null) {
+      console.log('Pre-speech buffer not initialized, returning empty');
+      return new Float32Array(0);
+    }
+    if (!this.bufferFull) {
+      console.log(`Pre-speech buffer not full, returning ${this.bufferIndex} samples from start`);
+      return this.audioBuffer.subarray(0, this.bufferIndex);
+    }
+    const result = new Float32Array(this.bufferCapacity);
+    const firstPart = this.audioBuffer.subarray(this.bufferIndex);
+    const secondPart = this.audioBuffer.subarray(0, this.bufferIndex);
+    result.set(firstPart, 0);
+    result.set(secondPart, firstPart.length);
+    return result;
+  },
+
+  combineBuffers(preSpeechBuffer: Float32Array, tempBufferArray: Float32Array[]): Float32Array {
+    const totalLength = preSpeechBuffer.length + tempBufferArray.reduce((sum, chunk) => sum + chunk.length, 0);
+    const combined = new Float32Array(totalLength);
+    let offset = 0;
+
+    combined.set(preSpeechBuffer, offset);
+    offset += preSpeechBuffer.length;
+
+    for (const chunk of tempBufferArray) {
+      combined.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return combined;
+  },
+
+  async resampleAudio(audioData: Float32Array, sourceSampleRate: number, targetSampleRate: number): Promise<Float32Array> {
+    if (sourceSampleRate === targetSampleRate) {
+      return audioData;
+    }
+
+    const offlineContext = new OfflineAudioContext({
+      numberOfChannels: 1,
+      length: Math.ceil(audioData.length * targetSampleRate / sourceSampleRate),
+      sampleRate: targetSampleRate
+    });
+
+    const buffer = offlineContext.createBuffer(1, audioData.length, sourceSampleRate);
+    buffer.getChannelData(0).set(audioData);
+
+    const source = offlineContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(offlineContext.destination);
+    source.start();
+
+    const renderedBuffer = await offlineContext.startRendering();
+    return renderedBuffer.getChannelData(0);
+  },
+
+  formatAudioData(float32Array: Float32Array): ArrayBuffer {
+    // Convert Float32Array to Int16Array, then to ArrayBuffer
+    // This is common for STT APIs expecting 16-bit PCM
+    const pcm16 = new Int16Array(float32Array.length);
+    for (let i = 0; i < float32Array.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32Array[i])); // Clamp to [-1, 1]
+        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF; // Scale to Int16 range
+    }
+    return pcm16.buffer;
+  },
+
+  // This will be called from the React component
+  async setupAudioCapture(
+    targetSampleRate: number, // e.g., 16000
+    onSpeechStartCallback: () => void,
+    onSpeechEndCallback: () => void,
+    onAudioChunkReady: (audioData: ArrayBuffer) => void, // Callback to send audio to WebSocket
+    setIsSpeechActive: (active: boolean) => void // Callback to update speech activity state
+  ) {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      });
+
+      this.audioContext = new AudioContext();
+      this.nativeSampleRate = this.audioContext.sampleRate;
+      console.log(`Detected native sample rate: ${this.nativeSampleRate} Hz`);
+
+      this.initBuffer(this.nativeSampleRate, 3); // Initialize buffer with native sample rate
+
+      this.vadInstance = await vad.MicVAD.new({
+        stream: stream,
+        sampleRate: this.nativeSampleRate,
+        onSpeechStart: () => {
+          setIsSpeechActive(true); // Update React state
+          onSpeechStartCallback(); // Custom callback for app logic
+          this.tempBuffer = []; // Clear previous temp buffer
+          this.postDelayBuffer = []; // Clear post-delay buffer
+          this.lastSendTime = null;
+
+          // Start timeout for pre-speech buffer send
+          this.speechStartTimeout = setTimeout(() => {
+            if (this.vadInstance.speech.active) { // Check VAD internal state
+              const preSpeechBuffer = this.getBufferedAudio();
+              const combinedAudio = this.combineBuffers(preSpeechBuffer, this.tempBuffer);
+              this.processAndSendAudio(combinedAudio, targetSampleRate, onAudioChunkReady);
+              this.lastSendTime = Date.now();
+              this.tempBuffer = []; // Clear temp buffer after sending
+            }
+            this.speechStartTimeout = null;
+          }, 500); // 500ms delay as in your original code
+        },
+        onSpeechEnd: () => {
+          setIsSpeechActive(false); // Update React state
+          onSpeechEndCallback(); // Custom callback for app logic
+
+          if (this.speechStartTimeout) { // If speech ended before initial timeout
+            clearTimeout(this.speechStartTimeout);
+            this.speechStartTimeout = null;
+            const preSpeechBuffer = this.getBufferedAudio();
+            const combinedAudio = this.combineBuffers(preSpeechBuffer, this.tempBuffer);
+            this.processAndSendAudio(combinedAudio, targetSampleRate, onAudioChunkReady);
+            this.tempBuffer = [];
+          } else if (this.postDelayBuffer.length > 0) { // If speech ended after speech started
+            const combinedPostDelay = this.postDelayBuffer.reduce((acc, chunk) => {
+                const result = new Float32Array(acc.length + chunk.length);
+                result.set(acc, 0);
+                result.set(chunk, acc.length);
+                return result;
+            }, new Float32Array(0));
+            this.processAndSendAudio(combinedPostDelay, targetSampleRate, onAudioChunkReady);
+            this.postDelayBuffer = [];
+          }
+        }
+      });
+      this.vadInstance.start();
+
+      this.micSource = this.audioContext.createMediaStreamSource(stream);
+      this.processorUrl = this.createWorkletUrl();
+      await this.audioContext.audioWorklet.addModule(this.processorUrl);
+      this.audioWorkletNode = new AudioWorkletNode(this.audioContext, 'audio-sender-processor');
+
+      this.audioWorkletNode.port.onmessage = async (event) => {
+        if (event.data && event.data.audioData) {
+          const audioData = event.data.audioData as Float32Array;
+          this.appendToBuffer(audioData); // Always append to pre-speech buffer
+
+          if (this.vadInstance.speech.active) { // If VAD detects speech
+            if (this.speechStartTimeout) {
+              this.tempBuffer.push(audioData.slice()); // Buffer until initial speech timeout
+            } else {
+              this.postDelayBuffer.push(audioData.slice()); // Buffer for post-speech send
+              const totalSamples = this.postDelayBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
+              const elapsedTime = this.lastSendTime ? (Date.now() - this.lastSendTime) / 1000 : 0;
+
+              // Send chunks every 0.6 seconds or when enough data accumulated
+              if (totalSamples >= (this.nativeSampleRate || 16000) * 0.6 || elapsedTime >= 0.6) {
+                const combinedPostDelay = this.postDelayBuffer.reduce((acc, chunk) => {
+                    const result = new Float32Array(acc.length + chunk.length);
+                    result.set(acc, 0);
+                    result.set(chunk, acc.length);
+                    return result;
+                }, new Float32Array(0));
+                this.processAndSendAudio(combinedPostDelay, targetSampleRate, onAudioChunkReady);
+                this.postDelayBuffer = [];
+                this.lastSendTime = Date.now();
+              }
+            }
+          }
+        }
+      };
+
+      this.micSource.connect(this.audioWorkletNode);
+      this.audioWorkletNode.connect(this.audioContext.destination); // Connect to destination to keep graph active
+
+      return true;
+    } catch (error: any) {
+      console.error('Failed to access microphone:', error);
+      alert('Failed to access microphone: ' + error.message + '. Please ensure you grant microphone permissions.');
+      this.releaseAudioResources(); // Clean up if setup fails
+      return false;
+    }
+  },
+
+  async processAndSendAudio(audioData: Float32Array, targetSampleRate: number, onAudioChunkReady: (audioData: ArrayBuffer) => void) {
+    if (audioData.length === 0) return;
+    const resampledAudio = await this.resampleAudio(audioData, this.nativeSampleRate || 44100, targetSampleRate);
+    console.log(`Resampled ${audioData.length} samples (${this.nativeSampleRate} Hz) to ${resampledAudio.length} samples (${targetSampleRate} Hz)`);
+    const formattedData = this.formatAudioData(resampledAudio);
+    onAudioChunkReady(formattedData);
+  },
+
+  getAudioWorkletProcessorCode(): string {
+    return `
+      class AudioSenderProcessor extends AudioWorkletProcessor {
+        process(inputs) {
+          const input = inputs[0];
+          if (input.length > 0 && input[0].length > 0) {
+            this.port.postMessage({ audioData: input[0].slice() });
+          }
+          return true; // Keep the processor alive
+        }
+      }
+      registerProcessor('audio-sender-processor', AudioSenderProcessor);
+    `;
+  },
+
+  createWorkletUrl(): string {
+    const blob = new Blob([this.getAudioWorkletProcessorCode()], { type: 'application/javascript' });
+    return URL.createObjectURL(blob);
+  },
+
+  releaseAudioResources() {
+    console.log("Releasing audio resources...");
+    if (this.vadInstance) {
+      this.vadInstance.pause();
+      this.vadInstance = null;
+    }
+    if (this.speechStartTimeout) {
+      clearTimeout(this.speechStartTimeout);
+      this.speechStartTimeout = null;
+    }
+
+    if (this.audioWorkletNode) this.audioWorkletNode.disconnect();
+    if (this.micSource) this.micSource.disconnect();
+    if (this.audioContext) {
+      this.audioContext.close().catch(e => console.error("Error closing AudioContext:", e));
+    }
+    if (this.audioStream) this.audioStream.getTracks().forEach(track => track.stop());
+    if (this.processorUrl) URL.revokeObjectURL(this.processorUrl);
+
+    this.audioBuffer = null;
+    this.bufferIndex = 0;
+    this.bufferFull = false;
+    this.tempBuffer = [];
+    this.postDelayBuffer = [];
+    this.lastSendTime = null;
+    this.nativeSampleRate = null;
+
+    this.audioContext = null;
+    this.micSource = null;
+    this.audioWorkletNode = null;
+    this.audioStream = null;
+    this.processorUrl = null;
+  }
+};
+
+
 const defaultSuggestionPrompt = 'Based on this conversation, provide helpful insights, key points, action items, and relevant follow-up suggestions.';
 const defaultGeminiModel = 'gemini-1.5-flash';
 
 function App() {
   const [isRecording, setIsRecording] = useState(false);
+  const [isSpeechActive, setIsSpeechActive] = useState(false); // State for VAD speech activity
   const [transcript, setTranscript] = useState<TranscriptSegment[]>([]);
-  const [currentText, setCurrentText] = useState('');
+  const [currentText, setCurrentText] = useState(''); // For interim results from your STT API
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
@@ -32,95 +466,219 @@ function App() {
   const [geminiApiKey, setGeminiApiKey] = useState<string>('');
   const [geminiModel, setGeminiModel] = useState<string>(defaultGeminiModel);
   const [lastSummaryLength, setLastSummaryLength] = useState(0);
-  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false); // Loading state for auto summary
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
   const [lastSuggestionLength, setLastSuggestionLength] = useState(0);
-  const [isGeneratingSuggestion, setIsGeneratingSuggestion] = useState(false); // Loading state for auto suggestion
+  const [isGeneratingSuggestion, setIsGeneratingSuggestion] = useState(false);
 
-  const recognitionRef = useRef<any>(null);
+  // New states for your WebSocket API configuration
+  const [wsHost, setWsHost] = useState("stt-streaming.blaze.vn");
+  const [wsPort, setWsPort] = useState(443);
+  const [wsLanguage, setWsLanguage] = useState('vi'); // Default to Vietnamese
+  const [wsTask, setWsTask] = useState('transcribe'); // From your CONFIG
+  const [wsModel, setWsModel] = useState('small'); // From your CONFIG
+  const [wsUseVad, setWsUseVad] = useState(true); // From your CONFIG
+  const [wsMaxConnectionTime, setWsMaxConnectionTime] = useState(600); // From your CONFIG
+  const [connectionStatus, setConnectionStatus] = useState<'idle' | 'connecting' | 'connected' | 'disconnected' | 'error' | 'reconnecting' | 'failed'>('idle');
+
+  // Refs for managing WebSocket client
+  const websocketClientRef = useRef<TranscriptionWebSocketClient | null>(null);
+  const transcriptQueue = useRef<string[]>([]); // To manage incoming transcription pieces
+
   const transcriptRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognition = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = true;
-      recognitionRef.current.interimResults = true;
-      recognitionRef.current.lang = 'en-US';
+  // --- WebSocket Message Handler (Callback for TranscriptionWebSocketClient) ---
+  const handleWebSocketMessage = useCallback((messageData: string | ArrayBuffer) => {
+    if (messageData instanceof ArrayBuffer) {
+      console.log('Received binary data (ignored):', messageData);
+      return;
+    }
+    try {
+      const data = JSON.parse(messageData);
+      // console.log("Received STT data:", data); // For debugging
 
-      recognitionRef.current.onresult = (event: any) => {
-        let interimTranscript = '';
-        let finalTranscript = '';
+      if (data.segments && Array.isArray(data.segments)) {
+        // Find the last completed segment or the latest segment
+        let newFinalText = '';
+        let newCurrentText = '';
+        let latestSegment: any = null;
 
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const result = event.results[i];
-          if (result.isFinal) {
-            finalTranscript += result[0].transcript;
-          } else {
-            interimTranscript += result[0].transcript;
-          }
-        }
+        data.segments.forEach((seg: any) => {
+            if (seg.completed) {
+                // Check if this segment text is already in the final transcript
+                // Avoid adding duplicates if the server re-sends completed segments
+                if (!transcriptQueue.current.includes(seg.text)) {
+                    transcriptQueue.current.push(seg.text);
+                }
+            } else {
+                // This is an interim result
+                newCurrentText = seg.text;
+            }
+            latestSegment = seg; // Keep track of the very last segment received
+        });
 
-        if (finalTranscript) {
-          const newSegment: TranscriptSegment = {
-            id: Date.now().toString(),
-            text: finalTranscript,
-            timestamp: new Date(),
-            confidence: event.results[event.results.length - 1][0].confidence
-          };
-          setTranscript(prev => {
-            const updatedTranscript = [...prev, newSegment];
-            generateAutoSuggestions(updatedTranscript);
-            checkAndGenerateAutoSummary(updatedTranscript); // This is where the summary is triggered
+        // Update the main transcript state with finalized segments from the queue
+        // This ensures segments are added only once and in order.
+        setTranscript(prev => {
+            let updatedTranscript = [...prev];
+            while (transcriptQueue.current.length > 0) {
+                const textToAdd = transcriptQueue.current.shift();
+                if (textToAdd) {
+                    updatedTranscript.push({
+                        id: `${Date.now()}-${Math.random()}`, // Ensure unique ID
+                        text: textToAdd,
+                        timestamp: new Date(),
+                        confidence: latestSegment?.confidence // Use latest segment's confidence if available
+                    });
+                }
+            }
             return updatedTranscript;
-          });
-          setCurrentText('');
-        } else {
-          setCurrentText(interimTranscript);
-        }
-      };
+        });
 
-      recognitionRef.current.onerror = (event: any) => {
-        if (event.error === 'aborted' && !isRecording) {
-          console.log('Speech recognition stopped by user');
-        } else {
-          console.error('Speech recognition error:', event.error);
-        }
-      };
+        setCurrentText(newCurrentText); // Update interim text
 
-      recognitionRef.current.onend = () => {
-        if (isRecording) {
-          recognitionRef.current.start();
-        }
-      };
+        // Trigger AI analysis when new final text comes in or transcript changes significantly
+        // Note: The `setTranscript` above will trigger the `useEffect` for AI analysis
+        // if `updatedTranscript` is different from `prev`.
+      } else if (data.type === 'transcription' && data.text) {
+        // Handle simple transcription text if your API sends full text per message
+        setTranscript(prev => {
+          const newSegment: TranscriptSegment = {
+            id: `${Date.now()}-${Math.random()}`,
+            text: data.text,
+            timestamp: new Date(),
+          };
+          const updatedTranscript = [...prev, newSegment];
+          // These calls will now happen after setTranscript, leveraging the useEffect
+          // generateAutoSuggestions(updatedTranscript);
+          // checkAndGenerateAutoSummary(updatedTranscript);
+          return updatedTranscript;
+        });
+        setCurrentText(''); // Clear interim text after a final segment
+      }
+    } catch (error) {
+      console.error('Error parsing or handling WebSocket message:', error);
     }
+  }, []); // Empty dependency array as it will be called from a ref-managed client
+
+  // --- Effect for AI Suggestions and Summaries based on transcript changes ---
+  useEffect(() => {
+    // This effect is now solely responsible for triggering AI based on `transcript` state updates
+    if (transcript.length > 0) {
+      // We pass the current state of `transcript` to ensure functions operate on the latest data
+      generateAutoSuggestions(transcript);
+      checkAndGenerateAutoSummary(transcript);
+    }
+  }, [transcript, geminiApiKey, suggestionPrompt, lastSummaryLength, lastSuggestionLength, isGeneratingSummary, isGeneratingSuggestion]);
+
+
+  // --- WebSocket Connection Management ---
+  const connectWebSocket = useCallback(async () => {
+    setConnectionStatus('connecting');
+    if (websocketClientRef.current) {
+        websocketClientRef.current.close(); // Close any existing connection
+    }
+
+    const client = new TranscriptionWebSocketClient({
+      host: wsHost,
+      port: wsPort,
+      language: wsLanguage,
+      task: wsTask,
+      model: wsModel,
+      useVad: wsUseVad,
+      maxConnectionTime: wsMaxConnectionTime,
+      onServerMessage: handleWebSocketMessage, // Pass the React state update callback
+      onConnection: () => {
+        setConnectionStatus('connected');
+        setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: '✅ Connected to STT server.', timestamp: new Date() }]);
+      },
+      onDisconnection: (code: number, reason: string) => {
+        setConnectionStatus('disconnected');
+        setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: `🔗 Disconnected from STT server: ${reason} (Code: ${code}).`, timestamp: new Date() }]);
+        // Implement auto-reconnect logic here if desired, similar to your old code
+      },
+      onError: (errorMessage: string) => {
+        setConnectionStatus('error');
+        setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: `❌ STT Connection Error: ${errorMessage}`, timestamp: new Date() }]);
+      }
+    });
+    websocketClientRef.current = client;
+
+    try {
+      await client.connect();
+    } catch (error: any) {
+      console.error('Initial WebSocket connection failed:', error);
+      setConnectionStatus('failed');
+      setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: `❌ Failed to connect to STT server: ${error.message}.`, timestamp: new Date() }]);
+    }
+  }, [wsHost, wsPort, wsLanguage, wsTask, wsModel, wsUseVad, wsMaxConnectionTime, handleWebSocketMessage]);
+
+  // Initial connection on component mount
+  useEffect(() => {
+    connectWebSocket();
+    // Cleanup WebSocket on unmount
+    return () => {
+      if (websocketClientRef.current) {
+        websocketClientRef.current.close();
+      }
+      AudioProcessorManager.releaseAudioResources();
+    };
+  }, [connectWebSocket]);
+
+
+  // --- Start/Stop Recording with your STT API ---
+  const startRecording = useCallback(async () => {
+    if (isRecording) return;
+
+    if (!websocketClientRef.current || !websocketClientRef.current.isConnected) {
+        setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: '⚠️ STT server not connected. Attempting to reconnect...', timestamp: new Date() }]);
+        await connectWebSocket();
+        if (!websocketClientRef.current || !websocketClientRef.current.isConnected) {
+            setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: '❌ Failed to start recording: STT server not available.', timestamp: new Date() }]);
+            return;
+        }
+    }
+
+    try {
+        const success = await AudioProcessorManager.setupAudioCapture(
+            16000, // Target sample rate for your STT API
+            () => { /* onSpeechStartCallback */ }, // VAD speech start, can log if needed
+            () => { /* onSpeechEndCallback */ }, // VAD speech end, can log if needed
+            (audioData: ArrayBuffer) => { // onAudioChunkReady: Send audio to WebSocket
+                if (websocketClientRef.current && websocketClientRef.current.isConnected) {
+                    websocketClientRef.current.sendAudioData(audioData);
+                }
+            },
+            setIsSpeechActive // Pass state updater for VAD activity indicator
+        );
+
+        if (success) {
+            setIsRecording(true);
+            if (websocketClientRef.current) {
+                websocketClientRef.current.isRecording = true;
+            }
+            setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: '🎤 Recording started, listening for speech...', timestamp: new Date() }]);
+        } else {
+            setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: '❌ Failed to start audio capture. Check microphone permissions.', timestamp: new Date() }]);
+        }
+    } catch (error: any) {
+        console.error("Error starting recording:", error);
+        setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: `❌ Error starting recording: ${error.message}`, timestamp: new Date() }]);
+    }
+  }, [isRecording, connectWebSocket, setIsSpeechActive, websocketClientRef]);
+
+
+  const stopRecording = useCallback(() => {
+    if (!isRecording) return;
+
+    setIsRecording(false);
+    AudioProcessorManager.releaseAudioResources(); // Release mic and audio context
+    if (websocketClientRef.current && websocketClientRef.current.isConnected) {
+      websocketClientRef.current.endTranscription(); // Signal end of audio to server
+      websocketClientRef.current.isRecording = false;
+    }
+    setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: '⏹️ Recording stopped.', timestamp: new Date() }]);
   }, [isRecording]);
-
-  useEffect(() => {
-    if (transcriptRef.current) {
-      transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
-    }
-  }, [transcript, currentText]);
-
-  useEffect(() => {
-    if (chatRef.current) {
-      chatRef.current.scrollTop = chatRef.current.scrollHeight;
-    }
-  }, [chatMessages, isTyping, isGeneratingSummary, isGeneratingSuggestion]); // Add loading states to chat scroll dependency
-
-  const startRecording = () => {
-    if (recognitionRef.current) {
-      setIsRecording(true);
-      recognitionRef.current.start();
-    }
-  };
-
-  const stopRecording = () => {
-    if (recognitionRef.current) {
-      setIsRecording(false);
-      recognitionRef.current.stop();
-    }
-  };
 
   const clearTranscript = () => {
     setTranscript([]);
@@ -142,10 +700,9 @@ function App() {
     const fullTranscription = segments.map(s => s.text).join(' ');
     const totalWords = fullTranscription.split(' ').length;
 
-    // Generate suggestions every 10 words or every 3 segments for more frequent updates
     const shouldGenerateSuggestion =
-      totalWords >= lastSuggestionLength + 10 ||
-      (segments.length >= 3 && segments.length % 3 === 0);
+      totalWords >= lastSuggestionLength + 10 || // Generate every 10 words
+      (segments.length >= 3 && segments.length % 3 === 0 && totalWords > 0); // Or every 3 segments if not empty
 
 
     if (shouldGenerateSuggestion && !isGeneratingSuggestion) {
@@ -174,10 +731,9 @@ ${fullTranscription}`;
         };
 
         setChatMessages(prev => [...prev, suggestionMessage]);
-        setLastSuggestionLength(totalWords); // Update length after successful generation
+        setLastSuggestionLength(totalWords);
       } catch (error) {
         console.error('Auto suggestion error:', error);
-        // Don't show error messages for auto suggestions to avoid spam in chat
       } finally {
         setIsGeneratingSuggestion(false);
       }
@@ -200,7 +756,6 @@ ${fullTranscription}`;
 
   const checkAndGenerateAutoSummary = async (segments: TranscriptSegment[]) => {
     if (!geminiApiKey.trim()) {
-      // Show message about needing API key only once, when transcript has some content
       if (segments.length > 0 && !chatMessages.some(msg => msg.content.includes('Gemini API key'))) {
         const apiKeyMessage: ChatMessage = {
           id: `api-key-notice-${Date.now()}`,
@@ -216,15 +771,15 @@ ${fullTranscription}`;
     const fullTranscription = segments.map(s => s.text).join(' ');
     const totalWords = fullTranscription.split(' ').length;
 
-    // Generate summary every 50 words or every 5 segments for more frequent summaries
+    // Trigger summary more frequently for testing: every 20 words or 3 segments
     const shouldGenerateSummary =
-      totalWords >= lastSummaryLength + 50 ||
-      (segments.length >= 5 && segments.length % 5 === 0);
+      totalWords >= lastSummaryLength + 20 ||
+      (segments.length >= 3 && segments.length % 3 === 0 && totalWords > 0);
+
 
     if (shouldGenerateSummary && !isGeneratingSummary) {
       setIsGeneratingSummary(true);
       try {
-        // Define a specific prompt for summarization
         const summaryPrompt = `Based on the following transcription, please provide a concise summary. Focus on the main topics discussed, any key decisions made, and important action items. Keep the summary to a maximum of 150 words.
 
 Current conversation transcription:
@@ -240,11 +795,11 @@ ${fullTranscription}`;
         };
 
         setChatMessages(prev => [...prev, summaryMessage]);
-        setLastSummaryLength(totalWords); // Update length after successful generation
+        setLastSummaryLength(totalWords);
       } catch (error) {
         console.error('Gemini API error for summary:', error);
         const errorMessage: ChatMessage = {
-          id: `error-summary-${Date.now()}`, // Unique ID for summary error
+          id: `error-summary-${Date.now()}`,
           type: 'assistant',
           content: `❌ **Error Generating Summary**: Failed to generate AI summary. Please check your API key and network connection.`,
           timestamp: new Date()
@@ -308,9 +863,8 @@ ${fullTranscription}`;
 
     setChatMessages(prev => [...prev, userMessage]);
     setChatInput('');
-    setIsTyping(true); // Set isTyping to true when user sends a message, indicating AI processing
+    setIsTyping(true);
 
-    // Generate AI response using Gemini API
     generateChatResponse(chatInput, transcript);
   };
 
@@ -354,7 +908,7 @@ Please provide a helpful, accurate response based on the transcription content. 
       };
       setChatMessages(prev => [...prev, errorMessage]);
     } finally {
-      setIsTyping(false); // Set isTyping to false once response is received or error occurs
+      setIsTyping(false);
     }
   };
 
@@ -452,6 +1006,10 @@ Please provide a helpful, accurate response based on the transcription content. 
                     <span className="text-sm font-medium">Recording</span>
                   </div>
                 )}
+                {connectionStatus === 'connecting' && <span className="text-sm text-yellow-600">Connecting...</span>}
+                {connectionStatus === 'reconnecting' && <span className="text-sm text-yellow-600">Reconnecting...</span>}
+                {connectionStatus === 'disconnected' && !isRecording && <span className="text-sm text-red-600">Disconnected</span>}
+                {connectionStatus === 'error' && <span className="text-sm text-red-600">Connection Error</span>}
               </div>
             </div>
 
@@ -462,6 +1020,9 @@ Please provide a helpful, accurate response based on the transcription content. 
                     <Mic className="h-12 w-12 mx-auto mb-4 text-slate-300" />
                     <p className="text-lg">Start recording to see live transcription</p>
                     <p className="text-sm mt-2">Your speech will appear here in real-time</p>
+                    {connectionStatus === 'idle' && <p className="text-xs text-slate-400 mt-1">Connecting to STT service...</p>}
+                    {connectionStatus === 'connected' && <p className="text-xs text-green-500 mt-1">STT Service Ready</p>}
+                    {connectionStatus === 'failed' && <p className="text-xs text-red-500 mt-1">Failed to connect to STT service. Check settings.</p>}
                   </div>
                 </div>
               ) : (
@@ -586,6 +1147,7 @@ Please provide a helpful, accurate response based on the transcription content. 
                             {isGeneratingSummary && "Generating AI summary..."}
                             {isGeneratingSuggestion && "Generating AI suggestion..."}
                             {isTyping && "Assistant analyzing..."}
+                            {!isGeneratingSummary && !isGeneratingSuggestion && !isTyping && "AI thinking..."} {/* Fallback message */}
                           </span>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></div>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
@@ -629,6 +1191,20 @@ Please provide a helpful, accurate response based on the transcription content. 
         onUpdateGeminiApiKey={setGeminiApiKey}
         geminiModel={geminiModel}
         onUpdateGeminiModel={setGeminiModel}
+        // New props for your WebSocket STT configuration
+        wsHost={wsHost}
+        setWsHost={setWsHost}
+        wsPort={wsPort}
+        setWsPort={setWsPort}
+        wsLanguage={wsLanguage}
+        setWsLanguage={setWsLanguage}
+        wsModel={wsModel}
+        setWsModel={setWsModel}
+        wsUseVad={wsUseVad}
+        setWsUseVad={setWsUseVad}
+        wsMaxConnectionTime={wsMaxConnectionTime}
+        setWsMaxConnectionTime={setWsMaxConnectionTime}
+        reconnectWebSocket={connectWebSocket} // Pass function to trigger reconnection from settings
       />
     </div>
   );
