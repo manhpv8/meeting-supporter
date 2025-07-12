@@ -45,8 +45,16 @@ export default function SettingsModal({ isOpen, onClose, suggestionPrompt, onUpd
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
               <h3 className="font-medium text-blue-900 mb-2">How it works</h3>
               <p className="text-sm text-blue-700">
-                Customize the AI prompt to get more relevant suggestions from your transcriptions. 
-                The AI will use this prompt to analyze the conversation content and generate helpful insights.
+                Customize the AI prompt to get more relevant suggestions and automatic summaries from your transcriptions. 
+                The AI will use this prompt to analyze the conversation content and generate helpful insights, action items, and comprehensive summaries.
+              </p>
+            </div>
+
+            <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+              <h3 className="font-medium text-green-900 mb-2">Auto Summary Feature</h3>
+              <p className="text-sm text-green-700">
+                The system automatically generates comprehensive summaries based on your prompt every 100 words or 8 transcript segments. 
+                Include keywords like "key points", "action items", "insights", "decisions", "follow up", or "questions" in your prompt to get specific types of summaries.
               </p>
             </div>
 

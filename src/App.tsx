@@ -34,6 +34,7 @@ function App() {
   const [isTyping, setIsTyping] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [suggestionPrompt, setSuggestionPrompt] = useState<string>(defaultSuggestionPrompt);
+  const [lastSummaryLength, setLastSummaryLength] = useState(0);
 
   const recognitionRef = useRef<any>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -70,6 +71,10 @@ function App() {
           setTranscript(prev => [...prev, newSegment]);
           setCurrentText('');
           generateRealtimeSuggestions([...transcript, newSegment], suggestionPrompt);
+          
+          // Generate auto summary when transcript reaches certain milestones
+          const newTranscript = [...transcript, newSegment];
+          checkAndGenerateAutoSummary(newTranscript);
         } else {
           setCurrentText(interimTranscript);
         }
@@ -122,6 +127,7 @@ function App() {
     clearTranscript();
     setChatMessages([]);
     setChatInput('');
+    setLastSummaryLength(0);
   };
 
   const downloadTranscript = () => {
@@ -138,6 +144,236 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
+  const checkAndGenerateAutoSummary = (segments: TranscriptSegment[]) => {
+    const totalWords = segments.reduce((count, segment) => 
+      count + segment.text.split(' ').length, 0
+    );
+    
+    // Generate summary every 100 words or when transcript length doubles
+    const shouldGenerateSummary = 
+      totalWords >= lastSummaryLength + 100 || 
+      (segments.length >= 10 && segments.length % 8 === 0);
+    
+    if (shouldGenerateSummary) {
+      generateAutoSummary(segments);
+      setLastSummaryLength(totalWords);
+    }
+  };
+
+  const generateAutoSummary = (segments: TranscriptSegment[]) => {
+    if (segments.length === 0) return;
+    
+    const fullTranscription = segments.map(s => s.text).join(' ');
+    const summary = generateComprehensiveSummary(fullTranscription, suggestionPrompt);
+    
+    if (summary) {
+      const summaryMessage: ChatMessage = {
+        id: `auto-summary-${Date.now()}`,
+        type: 'assistant',
+        content: `📋 **Auto Summary**: ${summary}`,
+        timestamp: new Date()
+      };
+      
+      setChatMessages(prev => [...prev, summaryMessage]);
+    }
+  };
+
+  const generateComprehensiveSummary = (transcriptionText: string, prompt: string): string => {
+    if (!transcriptionText.trim()) return '';
+    
+    const wordCount = transcriptionText.split(' ').length;
+    const topics = extractKeyTopics(transcriptionText);
+    const promptLower = prompt.toLowerCase();
+    
+    // Analyze the prompt to understand what kind of summary is needed
+    let summaryParts: string[] = [];
+    
+    // Add word count and duration info
+    summaryParts.push(`**Transcript Overview**: ${wordCount} words recorded`);
+    
+    // Generate content based on prompt requirements
+    if (promptLower.includes('key point') || promptLower.includes('main point') || promptLower.includes('điểm chính')) {
+      const keyPoints = generateKeyPoints(transcriptionText);
+      if (keyPoints) summaryParts.push(`**Key Points**: ${keyPoints}`);
+    }
+    
+    if (promptLower.includes('action') || promptLower.includes('task') || promptLower.includes('hành động')) {
+      const actionItems = generateActionItemsSummary(transcriptionText);
+      if (actionItems) summaryParts.push(`**Action Items**: ${actionItems}`);
+    }
+    
+    if (promptLower.includes('insight') || promptLower.includes('phân tích') || promptLower.includes('analyze')) {
+      const insights = generateInsightsSummary(transcriptionText);
+      if (insights) summaryParts.push(`**Insights**: ${insights}`);
+    }
+    
+    if (promptLower.includes('decision') || promptLower.includes('quyết định') || promptLower.includes('conclusion')) {
+      const decisions = generateDecisionsSummary(transcriptionText);
+      if (decisions) summaryParts.push(`**Decisions**: ${decisions}`);
+    }
+    
+    if (promptLower.includes('follow up') || promptLower.includes('next step') || promptLower.includes('tiếp theo')) {
+      const followUps = generateFollowUpsSummary(transcriptionText);
+      if (followUps) summaryParts.push(`**Follow-ups**: ${followUps}`);
+    }
+    
+    if (promptLower.includes('question') || promptLower.includes('câu hỏi')) {
+      const questions = generateQuestionsSummary(transcriptionText);
+      if (questions) summaryParts.push(`**Questions**: ${questions}`);
+    }
+    
+    // Always include main topics
+    if (topics.length > 0) {
+      summaryParts.push(`**Main Topics**: ${topics.slice(0, 5).join(', ')}`);
+    }
+    
+    // If no specific requirements found, generate general summary
+    if (summaryParts.length === 1) {
+      const generalSummary = generateGeneralSummary(transcriptionText);
+      summaryParts.push(`**Summary**: ${generalSummary}`);
+    }
+    
+    return summaryParts.join('\n\n');
+  };
+  
+  const generateKeyPoints = (text: string): string => {
+    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 10);
+    const importantSentences = sentences.filter(s => 
+      s.toLowerCase().includes('important') || 
+      s.toLowerCase().includes('key') ||
+      s.toLowerCase().includes('main') ||
+      s.toLowerCase().includes('significant') ||
+      s.toLowerCase().includes('crucial')
+    );
+    
+    if (importantSentences.length > 0) {
+      return importantSentences.slice(0, 3).map(s => `• ${s.trim()}`).join('\n');
+    }
+    
+    // Fallback: get first few substantial sentences
+    return sentences.slice(0, 3).map(s => `• ${s.trim()}`).join('\n');
+  };
+  
+  const generateActionItemsSummary = (text: string): string => {
+    const actionWords = ['need to', 'should', 'must', 'will', 'plan to', 'going to', 'have to', 'decide', 'implement', 'execute'];
+    const sentences = text.split(/[.!?]+/);
+    const actionSentences = sentences.filter(s => 
+      actionWords.some(word => s.toLowerCase().includes(word))
+    );
+    
+    if (actionSentences.length > 0) {
+      return actionSentences.slice(0, 3).map(s => `• ${s.trim()}`).join('\n');
+    }
+    
+    return 'No specific action items identified in current discussion';
+  };
+  
+  const generateInsightsSummary = (text: string): string => {
+    const insights = [];
+    const textLower = text.toLowerCase();
+    
+    if (textLower.includes('problem') || textLower.includes('issue') || textLower.includes('challenge')) {
+      insights.push('Problem-solving discussion detected');
+    }
+    
+    if (textLower.includes('opportunity') || textLower.includes('potential')) {
+      insights.push('Opportunities and potential areas identified');
+    }
+    
+    if (textLower.includes('risk') || textLower.includes('concern')) {
+      insights.push('Risk factors and concerns discussed');
+    }
+    
+    if (textLower.includes('strategy') || textLower.includes('approach')) {
+      insights.push('Strategic approaches and methodologies covered');
+    }
+    
+    const topics = extractKeyTopics(text);
+    if (topics.length > 3) {
+      insights.push(`Multiple interconnected topics: ${topics.slice(0, 3).join(', ')}`);
+    }
+    
+    return insights.length > 0 ? insights.map(i => `• ${i}`).join('\n') : 'General discussion insights being analyzed';
+  };
+  
+  const generateDecisionsSummary = (text: string): string => {
+    const decisionWords = ['decided', 'choose', 'selected', 'agreed', 'concluded', 'determined'];
+    const sentences = text.split(/[.!?]+/);
+    const decisionSentences = sentences.filter(s => 
+      decisionWords.some(word => s.toLowerCase().includes(word))
+    );
+    
+    if (decisionSentences.length > 0) {
+      return decisionSentences.slice(0, 2).map(s => `• ${s.trim()}`).join('\n');
+    }
+    
+    return 'No explicit decisions recorded in current discussion';
+  };
+  
+  const generateFollowUpsSummary = (text: string): string => {
+    const followUpWords = ['next', 'follow up', 'continue', 'schedule', 'plan', 'future'];
+    const sentences = text.split(/[.!?]+/);
+    const followUpSentences = sentences.filter(s => 
+      followUpWords.some(word => s.toLowerCase().includes(word))
+    );
+    
+    if (followUpSentences.length > 0) {
+      return followUpSentences.slice(0, 2).map(s => `• ${s.trim()}`).join('\n');
+    }
+    
+    const topics = extractKeyTopics(text);
+    if (topics.length > 0) {
+      return `• Consider deeper discussion on: ${topics.slice(0, 2).join(', ')}\n• Document and share key findings`;
+    }
+    
+    return '• Review discussion points\n• Schedule follow-up if needed';
+  };
+  
+  const generateQuestionsSummary = (text: string): string => {
+    // Extract actual questions from text
+    const questions = text.split(/[.!]/).filter(s => s.includes('?')).map(s => s.trim());
+    
+    if (questions.length > 0) {
+      return questions.slice(0, 3).map(q => `• ${q}`).join('\n');
+    }
+    
+    // Generate relevant questions based on content
+    const topics = extractKeyTopics(text);
+    const generatedQuestions = [];
+    
+    if (topics.length > 0) {
+      generatedQuestions.push(`What are the next steps regarding ${topics[0]}?`);
+      if (topics.length > 1) {
+        generatedQuestions.push(`How do ${topics[0]} and ${topics[1]} relate?`);
+      }
+    }
+    
+    if (text.toLowerCase().includes('problem') || text.toLowerCase().includes('challenge')) {
+      generatedQuestions.push('What solutions could address the discussed challenges?');
+    }
+    
+    return generatedQuestions.length > 0 ? 
+      generatedQuestions.map(q => `• ${q}`).join('\n') : 
+      '• What are the key takeaways from this discussion?';
+  };
+  
+  const generateGeneralSummary = (text: string): string => {
+    const wordCount = text.split(' ').length;
+    const topics = extractKeyTopics(text);
+    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 10);
+    
+    let summary = `Discussion covering ${wordCount} words`;
+    
+    if (topics.length > 0) {
+      summary += ` with main focus on ${topics.slice(0, 3).join(', ')}`;
+    }
+    
+    if (sentences.length > 5) {
+      summary += `. Key themes include various aspects of the discussed topics`;
+    }
+    
+    return summary;
+  };
   const generateRealtimeSuggestions = (segments: TranscriptSegment[], prompt: string) => {
     if (segments.length === 0) return;
 
