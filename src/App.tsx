@@ -1043,7 +1043,7 @@ Please provide a helpful, accurate response based on the transcription content. 
                   ))
                 )}
                 {(isTyping || isGeneratingSummary) && (
-                {(isTyping || isGeneratingSummary || isGeneratingSuggestion) && (
+                (isTyping || isGeneratingSummary || isGeneratingSuggestion) && (
                   <div className="flex justify-start">
                     <div className="flex items-start space-x-2 max-w-[80%]">
                       <div className="flex-shrink-0 w-8 h-8 rounded-full bg-slate-600 flex items-center justify-center">
