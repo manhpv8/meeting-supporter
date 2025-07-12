@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Mic, MicOff, Download, Trash2, Search, Send, Bot, User, Lightbulb, Settings } from 'lucide-react';
+import { Mic, MicOff, Download, Trash2, Search, Send, Bot, User, Lightbulb, Settings, AlertCircle } from 'lucide-react';
 import SettingsModal from './components/SettingsModal';
 
 interface TranscriptSegment {
@@ -23,6 +23,7 @@ interface Suggestion {
 }
 
 const defaultSuggestionPrompt = 'Based on this conversation, provide helpful insights, key points, action items, and relevant follow-up suggestions.';
+const defaultGeminiModel = 'gemini-1.5-flash';
 
 function App() {
   const [isRecording, setIsRecording] = useState(false);
@@ -34,7 +35,10 @@ function App() {
   const [isTyping, setIsTyping] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [suggestionPrompt, setSuggestionPrompt] = useState<string>(defaultSuggestionPrompt);
+  const [geminiApiKey, setGeminiApiKey] = useState<string>('');
+  const [geminiModel, setGeminiModel] = useState<string>(defaultGeminiModel);
   const [lastSummaryLength, setLastSummaryLength] = useState(0);
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
 
   const recognitionRef = useRef<any>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -70,10 +74,9 @@ function App() {
           };
           setTranscript(prev => [...prev, newSegment]);
           setCurrentText('');
-          generateRealtimeSuggestions([...transcript, newSegment], suggestionPrompt);
           
-          // Generate auto summary when transcript reaches certain milestones
           const newTranscript = [...transcript, newSegment];
+          generateRealtimeSuggestions(newTranscript, suggestionPrompt);
           checkAndGenerateAutoSummary(newTranscript);
         } else {
           setCurrentText(interimTranscript);
@@ -149,6 +152,20 @@ function App() {
   };
 
   const checkAndGenerateAutoSummary = (segments: TranscriptSegment[]) => {
+    if (!geminiApiKey.trim()) {
+      // Show message about needing API key only once
+      if (segments.length === 5 && !chatMessages.some(msg => msg.content.includes('Gemini API key'))) {
+        const apiKeyMessage: ChatMessage = {
+          id: `api-key-notice-${Date.now()}`,
+          type: 'assistant',
+          content: '🔑 **Setup Required**: Please configure your Gemini API key in Settings to enable automatic AI summaries and advanced suggestions.',
+          timestamp: new Date()
+        };
+        setChatMessages(prev => [...prev, apiKeyMessage]);
+      }
+      return;
+    }
+
     const totalWords = segments.reduce((count, segment) => 
       count + segment.text.split(' ').length, 0
     );
@@ -159,27 +176,81 @@ function App() {
       (segments.length >= 10 && segments.length % 8 === 0);
     
     if (shouldGenerateSummary) {
-      generateAutoSummary(segments);
+      generateGeminiSummary(segments);
       setLastSummaryLength(totalWords);
     }
   };
 
-  const generateAutoSummary = (segments: TranscriptSegment[]) => {
+  const generateGeminiSummary = async (segments: TranscriptSegment[]) => {
     if (segments.length === 0) return;
+    if (!geminiApiKey.trim()) return;
+    
+    setIsGeneratingSummary(true);
     
     const fullTranscription = segments.map(s => s.text).join(' ');
-    const summary = generateComprehensiveSummary(fullTranscription, suggestionPrompt);
     
-    if (summary) {
+    try {
+      const summary = await callGeminiAPI(fullTranscription, suggestionPrompt);
+      
       const summaryMessage: ChatMessage = {
         id: `auto-summary-${Date.now()}`,
         type: 'assistant',
-        content: `📋 **Auto Summary**: ${summary}`,
+        content: `🤖 **AI Summary**: ${summary}`,
         timestamp: new Date()
       };
       
       setChatMessages(prev => [...prev, summaryMessage]);
+    } catch (error) {
+      console.error('Gemini API error:', error);
+      const errorMessage: ChatMessage = {
+        id: `error-${Date.now()}`,
+        type: 'assistant',
+        content: `❌ **Error**: Failed to generate AI summary. Please check your API key and try again.`,
+        timestamp: new Date()
+      };
+      setChatMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsGeneratingSummary(false);
     }
+  };
+
+  const callGeminiAPI = async (transcriptionText: string, prompt: string): Promise<string> => {
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiApiKey}`;
+    
+    const requestBody = {
+      contents: [{
+        parts: [{
+          text: `${prompt}\n\nTranscription to analyze:\n${transcriptionText}`
+        }]
+      }],
+      generationConfig: {
+        temperature: 0.7,
+        topK: 40,
+        topP: 0.95,
+        maxOutputTokens: 1024,
+      }
+    };
+
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(`Gemini API error: ${response.status} - ${errorData.error?.message || 'Unknown error'}`);
+    }
+
+    const data = await response.json();
+    
+    if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+      throw new Error('Invalid response from Gemini API');
+    }
+    
+    return data.candidates[0].content.parts[0].text;
   };
 
   const generateComprehensiveSummary = (transcriptionText: string, prompt: string): string => {
@@ -378,7 +449,19 @@ function App() {
     
     return summary;
   };
+
   const generateRealtimeSuggestions = (segments: TranscriptSegment[], prompt: string) => {
+    // Only generate simple suggestions if no Gemini API key
+    if (!geminiApiKey.trim()) {
+      generateSimpleSuggestions(segments, prompt);
+      return;
+    }
+    
+    // Generate advanced suggestions with Gemini API
+    generateGeminiSuggestions(segments, prompt);
+  };
+  
+  const generateSimpleSuggestions = (segments: TranscriptSegment[], prompt: string) => {
     if (segments.length === 0) return;
 
     const fullText = segments.map(s => s.text).join(' ');
@@ -403,6 +486,31 @@ function App() {
     }
   };
     
+  const generateGeminiSuggestions = async (segments: TranscriptSegment[], prompt: string) => {
+    if (segments.length === 0) return;
+    
+    const fullText = segments.map(s => s.text).join(' ');
+    
+    // Generate suggestions every 4 segments to avoid spam
+    if (segments.length % 4 === 0 && fullText.length > 50) {
+      try {
+        const suggestionPromptText = `Based on this ongoing conversation, provide a brief helpful suggestion or insight (max 100 words): ${prompt}\n\nCurrent conversation: ${fullText}`;
+        const suggestion = await callGeminiAPI(fullText, suggestionPromptText);
+        
+        const suggestionMessage: ChatMessage = {
+          id: `gemini-suggestion-${Date.now()}`,
+          type: 'assistant',
+          content: `💡 **AI Insight**: ${suggestion}`,
+          timestamp: new Date()
+        };
+        
+        setChatMessages(prev => [...prev, suggestionMessage]);
+      } catch (error) {
+        console.error('Gemini suggestion error:', error);
+      }
+    }
+  };
+  
   const generatePromptBasedSuggestion = (transcriptionText: string, prompt: string): string | null => {
     if (!transcriptionText.trim() || !prompt.trim()) return null;
     
@@ -578,7 +686,7 @@ function App() {
 
     // Simulate AI response
     setTimeout(() => {
-      const response = generateResponse(chatInput, transcript);
+      const response = generateResponse(chatInput, transcript, geminiApiKey);
       const assistantMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
         type: 'assistant',
@@ -590,9 +698,13 @@ function App() {
     }, 1500);
   };
 
-  const generateResponse = (question: string, transcript: TranscriptSegment[]): string => {
+  const generateResponse = (question: string, transcript: TranscriptSegment[], hasGeminiKey: string): string => {
     const fullText = transcript.map(s => s.text).join(' ').toLowerCase();
     const questionLower = question.toLowerCase();
+
+    if (!hasGeminiKey.trim()) {
+      return "To get more advanced AI responses, please configure your Gemini API key in Settings. I can provide basic analysis of your transcription content.";
+    }
 
     if (questionLower.includes('summary') || questionLower.includes('summarize')) {
       const keywords = extractKeyTopics(fullText);
@@ -690,6 +802,11 @@ function App() {
               <h2 className="text-lg font-semibold text-slate-900">Live Transcription</h2>
               <div className="flex items-center space-x-3">
                 <div className="relative">
+                  {!geminiApiKey.trim() && (
+                    <div className="absolute -top-2 -right-2 z-10">
+                      <AlertCircle className="h-4 w-4 text-amber-500" />
+                    </div>
+                  )}
                   <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-slate-400" />
                   <input
                     type="text"
@@ -766,14 +883,30 @@ function App() {
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-[600px]">
               <div className="p-4 border-b border-slate-200">
                 <h3 className="text-lg font-semibold text-slate-900">AI Assistant</h3>
-                <p className="text-sm text-slate-600">Real-time suggestions and Q&A about your transcription</p>
+                <p className="text-sm text-slate-600">
+                  {geminiApiKey.trim() ? 
+                    'AI-powered suggestions and Q&A about your transcription' : 
+                    'Configure Gemini API in Settings for advanced AI features'
+                  }
+                </p>
+                {!geminiApiKey.trim() && (
+                  <div className="mt-2 flex items-center space-x-2 text-amber-600 bg-amber-50 px-3 py-2 rounded-lg">
+                    <AlertCircle className="h-4 w-4" />
+                    <span className="text-sm">Gemini API key required for AI summaries</span>
+                  </div>
+                )}
               </div>
               
               <div ref={chatRef} className="flex-1 p-4 overflow-y-auto space-y-4">
                 {chatMessages.length === 0 ? (
                   <div className="text-center text-slate-500 py-8">
                     <Bot className="h-8 w-8 mx-auto mb-2 text-slate-300" />
-                    <p className="text-sm">Start recording to receive real-time AI suggestions!</p>
+                    <p className="text-sm">
+                      {geminiApiKey.trim() ? 
+                        'Start recording to receive real-time AI suggestions!' :
+                        'Configure Gemini API key to enable AI features'
+                      }
+                    </p>
                   </div>
                 ) : (
                   chatMessages.map((message) => (
@@ -790,11 +923,18 @@ function App() {
                         <div className={`rounded-lg px-4 py-2 ${
                           message.type === 'user' 
                             ? 'bg-blue-600 text-white' 
-                            : message.content.includes('💡') ? 'bg-blue-50 text-blue-900 border border-blue-200' : 'bg-slate-100 text-slate-900'
+                            : message.content.includes('💡') || message.content.includes('🤖') ? 'bg-blue-50 text-blue-900 border border-blue-200' : 
+                              message.content.includes('🔑') ? 'bg-amber-50 text-amber-900 border border-amber-200' :
+                              message.content.includes('❌') ? 'bg-red-50 text-red-900 border border-red-200' :
+                              'bg-slate-100 text-slate-900'
                         }`}>
-                          <p className="text-sm">{message.content}</p>
+                          <div className="text-sm whitespace-pre-wrap">{message.content}</div>
                           <p className={`text-xs mt-1 ${
-                            message.type === 'user' ? 'text-blue-100' : message.content.includes('💡') ? 'text-blue-600' : 'text-slate-500'
+                            message.type === 'user' ? 'text-blue-100' : 
+                            message.content.includes('💡') || message.content.includes('🤖') ? 'text-blue-600' : 
+                            message.content.includes('🔑') ? 'text-amber-600' :
+                            message.content.includes('❌') ? 'text-red-600' :
+                            'text-slate-500'
                           }`}>
                             {message.timestamp.toLocaleTimeString()}
                           </p>
@@ -803,14 +943,15 @@ function App() {
                     </div>
                   ))
                 )}
-                {isTyping && (
+                {(isTyping || isGeneratingSummary) && (
                   <div className="flex justify-start">
                     <div className="flex items-start space-x-2 max-w-[80%]">
                       <div className="flex-shrink-0 w-8 h-8 rounded-full bg-slate-600 flex items-center justify-center">
                         <Bot className="h-4 w-4 text-white" />
                       </div>
                       <div className="bg-slate-100 rounded-lg px-4 py-2">
-                        <div className="flex space-x-1">
+                        <div className="flex items-center space-x-2">
+                          {isGeneratingSummary && <span className="text-xs text-slate-600">Generating AI summary...</span>}
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></div>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
@@ -849,6 +990,10 @@ function App() {
         onClose={() => setShowSettings(false)}
         suggestionPrompt={suggestionPrompt}
         onUpdatePrompt={setSuggestionPrompt}
+        geminiApiKey={geminiApiKey}
+        onUpdateGeminiApiKey={setGeminiApiKey}
+        geminiModel={geminiModel}
+        onUpdateGeminiModel={setGeminiModel}
       />
     </div>
   );
