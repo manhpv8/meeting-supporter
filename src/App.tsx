@@ -39,6 +39,8 @@ function App() {
   const [geminiModel, setGeminiModel] = useState<string>(defaultGeminiModel);
   const [lastSummaryLength, setLastSummaryLength] = useState(0);
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
+  const [lastSuggestionLength, setLastSuggestionLength] = useState(0);
+  const [isGeneratingSuggestion, setIsGeneratingSuggestion] = useState(false);
 
   const recognitionRef = useRef<any>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -77,6 +79,7 @@ function App() {
           
           const newTranscript = [...transcript, newSegment];
           generateRealtimeSuggestions(newTranscript, suggestionPrompt);
+          generateAutoSuggestions(newTranscript);
           checkAndGenerateAutoSummary(newTranscript);
         } else {
           setCurrentText(interimTranscript);
@@ -135,6 +138,67 @@ function App() {
     setChatMessages([]);
     setChatInput('');
     setLastSummaryLength(0);
+    setLastSuggestionLength(0);
+  };
+
+  const generateAutoSuggestions = (segments: TranscriptSegment[]) => {
+    if (!geminiApiKey.trim()) return;
+    if (segments.length === 0) return;
+
+    const totalWords = segments.reduce((count, segment) => 
+      count + segment.text.split(' ').length, 0
+    );
+    
+    // Generate suggestions every 50 words or every 5 segments
+    const shouldGenerateSuggestion = 
+      totalWords >= lastSuggestionLength + 50 || 
+      (segments.length >= 5 && segments.length % 5 === 0);
+    
+    if (shouldGenerateSuggestion && !isGeneratingSuggestion) {
+      generateAISuggestion(segments);
+      setLastSuggestionLength(totalWords);
+    }
+  };
+
+  const generateAISuggestion = async (segments: TranscriptSegment[]) => {
+    if (segments.length === 0) return;
+    if (!geminiApiKey.trim()) return;
+    
+    setIsGeneratingSuggestion(true);
+    
+    const fullTranscription = segments.map(s => s.text).join(' ');
+    
+    try {
+      // Use the AI Summary Prompt to extract insights
+      const suggestionPromptText = `${suggestionPrompt}
+
+Please provide specific, actionable suggestions based on the current conversation. Focus on:
+- Key insights that can be extracted
+- Important points that should be noted
+- Potential action items or follow-ups
+- Questions that might arise from the discussion
+
+Keep the response concise (max 150 words) and practical.
+
+Current conversation:
+${fullTranscription}`;
+
+      const suggestion = await callGeminiAPI(fullTranscription, suggestionPromptText);
+      
+      const suggestionMessage: ChatMessage = {
+        id: `auto-suggestion-${Date.now()}`,
+        type: 'assistant',
+        content: `💡 **Auto Suggestion**: ${suggestion}`,
+        timestamp: new Date()
+      };
+      
+      setChatMessages(prev => [...prev, suggestionMessage]);
+    } catch (error) {
+      console.error('Auto suggestion error:', error);
+      // Don't show error messages for auto suggestions to avoid spam
+    } finally {
+      setIsGeneratingSuggestion(false);
+    }
   };
 
   const downloadTranscript = () => {

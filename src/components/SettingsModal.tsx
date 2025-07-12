@@ -118,8 +118,20 @@ export default function SettingsModal({
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
             <h3 className="font-medium text-blue-900 mb-2">Auto Summary Feature</h3>
             <p className="text-sm text-blue-700">
-              When Gemini API is configured, the system will automatically generate comprehensive summaries 
-              every 100 words or 8 transcript segments using your custom prompt below.
+              When Gemini API is configured, the system will automatically:
+            </p>
+            <ul className="text-sm text-blue-700 mt-2 space-y-1">
+              <li>• Generate comprehensive summaries every 100 words or 8 transcript segments</li>
+              <li>• Create automatic suggestions every 50 words or 5 transcript segments</li>
+              <li>• Extract insights and action items based on your custom prompt</li>
+            </ul>
+          </div>
+
+          <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+            <h3 className="font-medium text-purple-900 mb-2">Auto Suggestion System</h3>
+            <p className="text-sm text-purple-700">
+              The AI will continuously analyze your transcription and automatically suggest:
+              key insights, action items, important points, and relevant questions based on your custom prompt.
             </p>
           </div>
 
