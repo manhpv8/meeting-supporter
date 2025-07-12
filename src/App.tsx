@@ -202,6 +202,46 @@ ${fullTranscription}`;
     }
   };
 
+  const generateAISuggestion = async (segments: TranscriptSegment[]) => {
+    if (segments.length === 0) return;
+    if (!geminiApiKey.trim()) return;
+    
+    setIsGeneratingSuggestion(true);
+    
+    const fullTranscription = segments.map(s => s.text).join(' ');
+    
+    try {
+      // Use the AI Summary Prompt to extract insights
+      const suggestionPromptText = `${suggestionPrompt}
+
+Please provide specific, actionable suggestions based on the current conversation. Focus on:
+- Key insights that can be extracted
+- Important points that should be noted
+- Potential action items or follow-ups
+- Questions that might arise from the discussion
+
+Keep the response concise (max 150 words) and practical.
+
+Current conversation:
+${fullTranscription}`;
+
+      const suggestion = await callGeminiAPI(fullTranscription, suggestionPromptText);
+      
+      const suggestionMessage: ChatMessage = {
+        id: `auto-suggestion-${Date.now()}`,
+        type: 'assistant',
+        content: `💡 **Auto Suggestion**: ${suggestion}`,
+        timestamp: new Date()
+      };
+      
+      setChatMessages(prev => [...prev, suggestionMessage]);
+    } catch (error) {
+      console.error('Auto suggestion error:', error);
+      // Don't show error messages for auto suggestions to avoid spam
+    } finally {
+      setIsGeneratingSuggestion(false);
+    }
+  };
 
   const downloadTranscript = () => {
     const fullText = transcript.map(segment => 
@@ -717,7 +757,11 @@ ${fullTranscription}`;
   };
   
   const extractKeyTopics = (text: string): string[] => {
-    const commonWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'shall', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'this', 'that', 'these', 'those', 'about', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'up', 'down', 'out', 'off', 'over', 'under', 'again', 'further', 'then', 'once']);
+    const commonWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can',
+    ]
+    )
+  }
+} 'shall', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'this', 'that', 'these', 'those', 'about', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'up', 'down', 'out', 'off', 'over', 'under', 'again', 'further', 'then', 'once']);
     
     const words = text.toLowerCase()
       .replace(/[^\w\s]/g, ' ')
@@ -1043,7 +1087,7 @@ Please provide a helpful, accurate response based on the transcription content. 
                   ))
                 )}
                 {(isTyping || isGeneratingSummary) && (
-                (isTyping || isGeneratingSummary || isGeneratingSuggestion) && (
+                {(isTyping || isGeneratingSummary || isGeneratingSuggestion) && (
                   <div className="flex justify-start">
                     <div className="flex items-start space-x-2 max-w-[80%]">
                       <div className="flex-shrink-0 w-8 h-8 rounded-full bg-slate-600 flex items-center justify-center">
@@ -1053,7 +1097,6 @@ Please provide a helpful, accurate response based on the transcription content. 
                         <div className="flex items-center space-x-2">
                           {isGeneratingSummary && <span className="text-xs text-slate-600">Generating AI summary...</span>}
                           {isGeneratingSuggestion && <span className="text-xs text-slate-600">Generating AI suggestion...</span>}
-                          {isTyping && <span className="text-xs text-slate-600">Typing...</span>}
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></div>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
