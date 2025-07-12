@@ -1,8 +1,9 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Mic, MicOff, Download, Trash2, Search, Send, Bot, User, Lightbulb, Settings, AlertCircle } from 'lucide-react';
 import SettingsModal from './components/SettingsModal';
+import * as vad from '@ricky0123/vad-web'; // Correct import for vad library
 
-// --- Global Type Definitions (can be moved to a types.ts file) ---
+// --- Global Type Definitions ---
 interface TranscriptSegment {
   id: string;
   text: string;
@@ -17,13 +18,7 @@ interface ChatMessage {
   timestamp: Date;
 }
 
-// --- Placeholder for VAD library (Ensure you install and import this properly) ---
-// Example: import * as vad from '@ricky0123/vad-web';
-// For demonstration, we'll declare it as any. Replace with actual import if available.
-import * as vad from '@ricky0123/vad-web';
-
-
-// --- WebSocket Client Class (Moved outside App for reusability, or into a separate file) ---
+// --- WebSocket Client Class ---
 class TranscriptionWebSocketClient {
   private socket: WebSocket | null = null;
   public isConnected: boolean = false;
@@ -92,7 +87,7 @@ class TranscriptionWebSocketClient {
       this.socket.onerror = (errorEvent) => {
         clearTimeout(connectionTimeout);
         this.isConnected = false;
-        console.error("WebSocket Error:", errorEvent); // Log the full event for debugging
+        console.error("WebSocket Error:", errorEvent);
         if (this.onErrorCallback) this.onErrorCallback('WebSocket connection error');
       };
     });
@@ -118,15 +113,14 @@ class TranscriptionWebSocketClient {
 
   public sendAudioData(audioData: ArrayBuffer): boolean {
     if (!this.isConnected || !this.socket || this.socket.readyState !== WebSocket.OPEN) return false;
-    if (!this.isInitialConfigSent) this.sendInitialConfig(); // Ensure config is sent first
+    if (!this.isInitialConfigSent) this.sendInitialConfig();
     this.socket.send(audioData);
     return true;
   }
 
   public endTranscription(): boolean {
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      // Send "END_OF_AUDIO" as binary array if expecting TextEncoder.encode()
-      this.socket.send(new TextEncoder().encode("END_OF_AUDIO"));
+      this.socket.send(new TextEncoder().encode("END_OF_AUDIO").buffer); // Ensure sending as ArrayBuffer
       this.isRecording = false;
       console.log("Sent END_OF_AUDIO");
       return true;
@@ -137,7 +131,6 @@ class TranscriptionWebSocketClient {
   public close(): void {
     if (this.socket) {
       if (this.socket.readyState === WebSocket.OPEN) {
-        // Optional: send a graceful close message
         this.socket.send(JSON.stringify({ type: 'close', uid: this.clientUid }));
         this.socket.close(1000, "Normal closure");
       }
@@ -150,25 +143,28 @@ class TranscriptionWebSocketClient {
   }
 }
 
-// --- Audio Processor Singleton-like Object (Adapted for React refs) ---
-// This handles microphone access, VAD, buffering, resampling, and sending audio.
+// --- Audio Processor Manager ---
 const AudioProcessorManager = {
   audioBuffer: null as Float32Array | null,
   bufferCapacity: null as number | null,
   bufferIndex: 0,
   bufferFull: false,
-  tempBuffer: [] as Float32Array[], // Buffer for speech activity detection start
+  tempBuffer: [] as Float32Array[],
   speechStartTimeout: null as NodeJS.Timeout | null,
-  postDelayBuffer: [] as Float32Array[], // Buffer for speech activity detection end
+  postDelayBuffer: [] as Float32Array[],
   lastSendTime: null as number | null,
   nativeSampleRate: null as number | null,
-  // Reactive parts, managed by the React component using refs
+  
+  // React-managed parts (these will be set from App component's state/refs)
   vadInstance: null as any,
   audioContext: null as AudioContext | null,
   audioStream: null as MediaStream | null,
   micSource: null as MediaStreamAudioSourceNode | null,
   audioWorkletNode: null as AudioWorkletNode | null,
   processorUrl: null as string | null,
+
+  // IMPORTANT: Path to your AudioWorklet processor file in the public directory
+  WORKLET_PROCESSOR_URL: '/audio-sender-processor.js',
 
   initBuffer(sampleRate: number, bufferDurationSeconds: number) {
     this.bufferCapacity = sampleRate * bufferDurationSeconds;
@@ -180,7 +176,6 @@ const AudioProcessorManager = {
 
   appendToBuffer(audioData: Float32Array) {
     if (!this.audioBuffer || this.bufferCapacity === null) {
-      // Initialize with a default if not set, or throw error
       console.warn("Pre-speech buffer not initialized, initializing with default.");
       this.initBuffer(this.nativeSampleRate || 16000, 3);
     }
@@ -190,7 +185,7 @@ const AudioProcessorManager = {
 
     while (remainingSamples > 0) {
       const samplesToCopy = Math.min(remainingSamples, (this.bufferCapacity || 0) - this.bufferIndex);
-      if (this.audioBuffer) { // Check if audioBuffer is not null after potential late init
+      if (this.audioBuffer) {
         this.audioBuffer.set(audioData.subarray(offset, offset + samplesToCopy), this.bufferIndex);
       }
       this.bufferIndex = (this.bufferIndex + samplesToCopy) % (this.bufferCapacity || 1);
@@ -208,7 +203,6 @@ const AudioProcessorManager = {
       return new Float32Array(0);
     }
     if (!this.bufferFull) {
-      console.log(`Pre-speech buffer not full, returning ${this.bufferIndex} samples from start`);
       return this.audioBuffer.subarray(0, this.bufferIndex);
     }
     const result = new Float32Array(this.bufferCapacity);
@@ -259,7 +253,6 @@ const AudioProcessorManager = {
 
   formatAudioData(float32Array: Float32Array): ArrayBuffer {
     // Convert Float32Array to Int16Array, then to ArrayBuffer
-    // This is common for STT APIs expecting 16-bit PCM
     const pcm16 = new Int16Array(float32Array.length);
     for (let i = 0; i < float32Array.length; i++) {
         const s = Math.max(-1, Math.min(1, float32Array[i])); // Clamp to [-1, 1]
@@ -268,12 +261,11 @@ const AudioProcessorManager = {
     return pcm16.buffer;
   },
 
-  // This will be called from the React component
   async setupAudioCapture(
-    targetSampleRate: number, // e.g., 16000
+    targetSampleRate: number,
     onSpeechStartCallback: () => void,
     onSpeechEndCallback: () => void,
-    onAudioChunkReady: (audioData: ArrayBuffer) => void, // Callback to send audio to WebSocket
+    onAudioChunkReady: (audioData: ArrayBuffer) => void,
     setIsSpeechActive: (active: boolean) => void // Callback to update speech activity state
   ) {
     try {
@@ -302,14 +294,13 @@ const AudioProcessorManager = {
           this.postDelayBuffer = []; // Clear post-delay buffer
           this.lastSendTime = null;
 
-          // Start timeout for pre-speech buffer send
           this.speechStartTimeout = setTimeout(() => {
-            if (this.vadInstance.speech.active) { // Check VAD internal state
+            if (this.vadInstance.speech.active) {
               const preSpeechBuffer = this.getBufferedAudio();
               const combinedAudio = this.combineBuffers(preSpeechBuffer, this.tempBuffer);
               this.processAndSendAudio(combinedAudio, targetSampleRate, onAudioChunkReady);
               this.lastSendTime = Date.now();
-              this.tempBuffer = []; // Clear temp buffer after sending
+              this.tempBuffer = [];
             }
             this.speechStartTimeout = null;
           }, 500); // 500ms delay as in your original code
@@ -318,14 +309,14 @@ const AudioProcessorManager = {
           setIsSpeechActive(false); // Update React state
           onSpeechEndCallback(); // Custom callback for app logic
 
-          if (this.speechStartTimeout) { // If speech ended before initial timeout
+          if (this.speechStartTimeout) {
             clearTimeout(this.speechStartTimeout);
             this.speechStartTimeout = null;
             const preSpeechBuffer = this.getBufferedAudio();
             const combinedAudio = this.combineBuffers(preSpeechBuffer, this.tempBuffer);
             this.processAndSendAudio(combinedAudio, targetSampleRate, onAudioChunkReady);
             this.tempBuffer = [];
-          } else if (this.postDelayBuffer.length > 0) { // If speech ended after speech started
+          } else if (this.postDelayBuffer.length > 0) {
             const combinedPostDelay = this.postDelayBuffer.reduce((acc, chunk) => {
                 const result = new Float32Array(acc.length + chunk.length);
                 result.set(acc, 0);
@@ -340,24 +331,24 @@ const AudioProcessorManager = {
       this.vadInstance.start();
 
       this.micSource = this.audioContext.createMediaStreamSource(stream);
-      this.processorUrl = this.createWorkletUrl();
-      await this.audioContext.audioWorklet.addModule(this.processorUrl);
+
+      // Load the AudioWorklet module from the public path
+      await this.audioContext.audioWorklet.addModule(this.WORKLET_PROCESSOR_URL);
       this.audioWorkletNode = new AudioWorkletNode(this.audioContext, 'audio-sender-processor');
 
       this.audioWorkletNode.port.onmessage = async (event) => {
         if (event.data && event.data.audioData) {
           const audioData = event.data.audioData as Float32Array;
-          this.appendToBuffer(audioData); // Always append to pre-speech buffer
+          this.appendToBuffer(audioData);
 
-          if (this.vadInstance.speech.active) { // If VAD detects speech
+          if (this.vadInstance.speech.active) {
             if (this.speechStartTimeout) {
-              this.tempBuffer.push(audioData.slice()); // Buffer until initial speech timeout
+              this.tempBuffer.push(audioData.slice());
             } else {
-              this.postDelayBuffer.push(audioData.slice()); // Buffer for post-speech send
+              this.postDelayBuffer.push(audioData.slice());
               const totalSamples = this.postDelayBuffer.reduce((sum, chunk) => sum + chunk.length, 0);
               const elapsedTime = this.lastSendTime ? (Date.now() - this.lastSendTime) / 1000 : 0;
 
-              // Send chunks every 0.6 seconds or when enough data accumulated
               if (totalSamples >= (this.nativeSampleRate || 16000) * 0.6 || elapsedTime >= 0.6) {
                 const combinedPostDelay = this.postDelayBuffer.reduce((acc, chunk) => {
                     const result = new Float32Array(acc.length + chunk.length);
@@ -377,11 +368,14 @@ const AudioProcessorManager = {
       this.micSource.connect(this.audioWorkletNode);
       this.audioWorkletNode.connect(this.audioContext.destination); // Connect to destination to keep graph active
 
+      this.processorUrl = this.WORKLET_PROCESSOR_URL; // Store for consistency
+
       return true;
     } catch (error: any) {
       console.error('Failed to access microphone:', error);
-      alert('Failed to access microphone: ' + error.message + '. Please ensure you grant microphone permissions.');
-      this.releaseAudioResources(); // Clean up if setup fails
+      // Removed direct alert to let the component manage messages
+      // alert('Failed to access microphone: ' + error.message + '. Please ensure you grant microphone permissions.');
+      this.releaseAudioResources();
       return false;
     }
   },
@@ -392,26 +386,6 @@ const AudioProcessorManager = {
     console.log(`Resampled ${audioData.length} samples (${this.nativeSampleRate} Hz) to ${resampledAudio.length} samples (${targetSampleRate} Hz)`);
     const formattedData = this.formatAudioData(resampledAudio);
     onAudioChunkReady(formattedData);
-  },
-
-  getAudioWorkletProcessorCode(): string {
-    return `
-      class AudioSenderProcessor extends AudioWorkletProcessor {
-        process(inputs) {
-          const input = inputs[0];
-          if (input.length > 0 && input[0].length > 0) {
-            this.port.postMessage({ audioData: input[0].slice() });
-          }
-          return true; // Keep the processor alive
-        }
-      }
-      registerProcessor('audio-sender-processor', AudioSenderProcessor);
-    `;
-  },
-
-  createWorkletUrl(): string {
-    const blob = new Blob([this.getAudioWorkletProcessorCode()], { type: 'application/javascript' });
-    return URL.createObjectURL(blob);
   },
 
   releaseAudioResources() {
@@ -431,8 +405,8 @@ const AudioProcessorManager = {
       this.audioContext.close().catch(e => console.error("Error closing AudioContext:", e));
     }
     if (this.audioStream) this.audioStream.getTracks().forEach(track => track.stop());
-    if (this.processorUrl) URL.revokeObjectURL(this.processorUrl);
-
+    
+    // Cleanup temporary objects
     this.audioBuffer = null;
     this.bufferIndex = 0;
     this.bufferFull = false;
@@ -441,6 +415,7 @@ const AudioProcessorManager = {
     this.lastSendTime = null;
     this.nativeSampleRate = null;
 
+    // Reset references
     this.audioContext = null;
     this.micSource = null;
     this.audioWorkletNode = null;
@@ -471,19 +446,19 @@ function App() {
   const [lastSuggestionLength, setLastSuggestionLength] = useState(0);
   const [isGeneratingSuggestion, setIsGeneratingSuggestion] = useState(false);
 
-  // New states for your WebSocket API configuration
+  // New states for your WebSocket API configuration (default values)
   const [wsHost, setWsHost] = useState("stt-streaming.blaze.vn");
   const [wsPort, setWsPort] = useState(443);
   const [wsLanguage, setWsLanguage] = useState('vi'); // Default to Vietnamese
-  const [wsTask, setWsTask] = useState('transcribe'); // From your CONFIG
-  const [wsModel, setWsModel] = useState('small'); // From your CONFIG
-  const [wsUseVad, setWsUseVad] = useState(true); // From your CONFIG
-  const [wsMaxConnectionTime, setWsMaxConnectionTime] = useState(600); // From your CONFIG
+  const [wsTask, setWsTask] = useState('transcribe');
+  const [wsModel, setWsModel] = useState('small');
+  const [wsUseVad, setWsUseVad] = useState(true);
+  const [wsMaxConnectionTime, setWsMaxConnectionTime] = useState(600);
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'connecting' | 'connected' | 'disconnected' | 'error' | 'reconnecting' | 'failed'>('idle');
 
   // Refs for managing WebSocket client
   const websocketClientRef = useRef<TranscriptionWebSocketClient | null>(null);
-  const transcriptQueue = useRef<string[]>([]); // To manage incoming transcription pieces
+  const transcriptQueue = useRef<string[]>([]); // To manage incoming transcription pieces to avoid duplicates and ensure order
 
   const transcriptRef = useRef<HTMLDivElement>(null);
   const chatRef = useRef<HTMLDivElement>(null);
@@ -496,40 +471,37 @@ function App() {
     }
     try {
       const data = JSON.parse(messageData);
-      // console.log("Received STT data:", data); // For debugging
+      // console.log("Received STT data:", data); // For detailed debugging
 
       if (data.segments && Array.isArray(data.segments)) {
-        // Find the last completed segment or the latest segment
-        let newFinalText = '';
         let newCurrentText = '';
         let latestSegment: any = null;
 
         data.segments.forEach((seg: any) => {
             if (seg.completed) {
-                // Check if this segment text is already in the final transcript
-                // Avoid adding duplicates if the server re-sends completed segments
+                // Only add if not already present in the queue (or final transcript)
+                // This logic assumes `seg.text` for completed segments is unique per segment.
+                // If the server re-sends *identical* completed segments, you might need a more robust check (e.g., using segment IDs from the server if they are stable).
                 if (!transcriptQueue.current.includes(seg.text)) {
                     transcriptQueue.current.push(seg.text);
                 }
             } else {
-                // This is an interim result
-                newCurrentText = seg.text;
+                newCurrentText = seg.text; // Interim result
             }
-            latestSegment = seg; // Keep track of the very last segment received
+            latestSegment = seg; // Keep track of the very last segment received for confidence
         });
 
         // Update the main transcript state with finalized segments from the queue
-        // This ensures segments are added only once and in order.
         setTranscript(prev => {
             let updatedTranscript = [...prev];
             while (transcriptQueue.current.length > 0) {
                 const textToAdd = transcriptQueue.current.shift();
                 if (textToAdd) {
                     updatedTranscript.push({
-                        id: `${Date.now()}-${Math.random()}`, // Ensure unique ID
+                        id: `${Date.now()}-${Math.random()}`, // Generate unique ID for React key
                         text: textToAdd,
-                        timestamp: new Date(),
-                        confidence: latestSegment?.confidence // Use latest segment's confidence if available
+                        timestamp: new Date(), // Consider using seg.start/end if your API provides precise timestamps
+                        confidence: latestSegment?.confidence // Use confidence from the last segment
                     });
                 }
             }
@@ -537,12 +509,10 @@ function App() {
         });
 
         setCurrentText(newCurrentText); // Update interim text
-
-        // Trigger AI analysis when new final text comes in or transcript changes significantly
-        // Note: The `setTranscript` above will trigger the `useEffect` for AI analysis
-        // if `updatedTranscript` is different from `prev`.
+        
+        // AI analysis is triggered by the `transcript` useEffect
       } else if (data.type === 'transcription' && data.text) {
-        // Handle simple transcription text if your API sends full text per message
+        // Fallback for simple (non-segmented) transcription data
         setTranscript(prev => {
           const newSegment: TranscriptSegment = {
             id: `${Date.now()}-${Math.random()}`,
@@ -550,34 +520,30 @@ function App() {
             timestamp: new Date(),
           };
           const updatedTranscript = [...prev, newSegment];
-          // These calls will now happen after setTranscript, leveraging the useEffect
-          // generateAutoSuggestions(updatedTranscript);
-          // checkAndGenerateAutoSummary(updatedTranscript);
           return updatedTranscript;
         });
-        setCurrentText(''); // Clear interim text after a final segment
+        setCurrentText('');
       }
     } catch (error) {
       console.error('Error parsing or handling WebSocket message:', error);
     }
-  }, []); // Empty dependency array as it will be called from a ref-managed client
+  }, []); // Empty dependency array as it's a callback that doesn't capture outer state
 
   // --- Effect for AI Suggestions and Summaries based on transcript changes ---
   useEffect(() => {
-    // This effect is now solely responsible for triggering AI based on `transcript` state updates
-    if (transcript.length > 0) {
-      // We pass the current state of `transcript` to ensure functions operate on the latest data
+    if (transcript.length > 0 || currentText) { // Trigger if there's any text
+      // Pass the current state of `transcript` to ensure functions operate on the latest data
       generateAutoSuggestions(transcript);
       checkAndGenerateAutoSummary(transcript);
     }
-  }, [transcript, geminiApiKey, suggestionPrompt, lastSummaryLength, lastSuggestionLength, isGeneratingSummary, isGeneratingSuggestion]);
+  }, [transcript, currentText, geminiApiKey, suggestionPrompt, lastSummaryLength, lastSuggestionLength, isGeneratingSummary, isGeneratingSuggestion]);
 
 
   // --- WebSocket Connection Management ---
   const connectWebSocket = useCallback(async () => {
     setConnectionStatus('connecting');
     if (websocketClientRef.current) {
-        websocketClientRef.current.close(); // Close any existing connection
+        websocketClientRef.current.close(); // Close any existing connection cleanly
     }
 
     const client = new TranscriptionWebSocketClient({
@@ -596,7 +562,8 @@ function App() {
       onDisconnection: (code: number, reason: string) => {
         setConnectionStatus('disconnected');
         setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: `🔗 Disconnected from STT server: ${reason} (Code: ${code}).`, timestamp: new Date() }]);
-        // Implement auto-reconnect logic here if desired, similar to your old code
+        // For auto-reconnect, you'd typically set a timeout here:
+        // if (code !== 1000) { /* implement reconnect logic */ }
       },
       onError: (errorMessage: string) => {
         setConnectionStatus('error');
@@ -614,37 +581,37 @@ function App() {
     }
   }, [wsHost, wsPort, wsLanguage, wsTask, wsModel, wsUseVad, wsMaxConnectionTime, handleWebSocketMessage]);
 
-  // Initial connection on component mount
+  // Initial WebSocket connection and cleanup on component mount/unmount
   useEffect(() => {
     connectWebSocket();
-    // Cleanup WebSocket on unmount
     return () => {
       if (websocketClientRef.current) {
         websocketClientRef.current.close();
       }
       AudioProcessorManager.releaseAudioResources();
     };
-  }, [connectWebSocket]);
+  }, [connectWebSocket]); // Re-run if connectWebSocket callback changes (e.g., config changes)
 
 
   // --- Start/Stop Recording with your STT API ---
   const startRecording = useCallback(async () => {
-    if (isRecording) return;
+    if (isRecording) return; // Already recording
 
+    // Ensure WebSocket is connected before starting audio capture
     if (!websocketClientRef.current || !websocketClientRef.current.isConnected) {
         setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: '⚠️ STT server not connected. Attempting to reconnect...', timestamp: new Date() }]);
-        await connectWebSocket();
+        await connectWebSocket(); // Try to reconnect
         if (!websocketClientRef.current || !websocketClientRef.current.isConnected) {
             setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: '❌ Failed to start recording: STT server not available.', timestamp: new Date() }]);
-            return;
+            return; // Exit if still not connected
         }
     }
 
     try {
         const success = await AudioProcessorManager.setupAudioCapture(
-            16000, // Target sample rate for your STT API
-            () => { /* onSpeechStartCallback */ }, // VAD speech start, can log if needed
-            () => { /* onSpeechEndCallback */ }, // VAD speech end, can log if needed
+            16000, // Target sample rate for your STT API (from your CONFIG.audio.sampleRate)
+            () => { console.log('VAD: Speech started'); }, // onSpeechStartCallback
+            () => { console.log('VAD: Speech ended'); },   // onSpeechEndCallback
             (audioData: ArrayBuffer) => { // onAudioChunkReady: Send audio to WebSocket
                 if (websocketClientRef.current && websocketClientRef.current.isConnected) {
                     websocketClientRef.current.sendAudioData(audioData);
@@ -660,17 +627,17 @@ function App() {
             }
             setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: '🎤 Recording started, listening for speech...', timestamp: new Date() }]);
         } else {
-            setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: '❌ Failed to start audio capture. Check microphone permissions.', timestamp: new Date() }]);
+            setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: '❌ Failed to start audio capture. Check microphone permissions and browser console for details.', timestamp: new Date() }]);
         }
     } catch (error: any) {
         console.error("Error starting recording:", error);
         setChatMessages(prev => [...prev, { id: Date.now().toString(), type: 'assistant', content: `❌ Error starting recording: ${error.message}`, timestamp: new Date() }]);
     }
-  }, [isRecording, connectWebSocket, setIsSpeechActive, websocketClientRef]);
+  }, [isRecording, connectWebSocket, setIsSpeechActive]);
 
 
   const stopRecording = useCallback(() => {
-    if (!isRecording) return;
+    if (!isRecording) return; // Not recording
 
     setIsRecording(false);
     AudioProcessorManager.releaseAudioResources(); // Release mic and audio context
@@ -692,6 +659,9 @@ function App() {
     setChatInput('');
     setLastSummaryLength(0);
     setLastSuggestionLength(0);
+    // Optionally, reset connection status if you want to force a fresh start
+    // setConnectionStatus('idle');
+    // if (websocketClientRef.current) websocketClientRef.current.close();
   };
 
   const generateAutoSuggestions = async (segments: TranscriptSegment[]) => {
@@ -701,9 +671,10 @@ function App() {
     const fullTranscription = segments.map(s => s.text).join(' ');
     const totalWords = fullTranscription.split(' ').length;
 
+    // Generate suggestions more frequently: every 10 words or every 3 segments
     const shouldGenerateSuggestion =
-      totalWords >= lastSuggestionLength + 10 || // Generate every 10 words
-      (segments.length >= 3 && segments.length % 3 === 0 && totalWords > 0); // Or every 3 segments if not empty
+      totalWords >= lastSuggestionLength + 10 ||
+      (segments.length >= 3 && segments.length % 3 === 0 && totalWords > 0);
 
 
     if (shouldGenerateSuggestion && !isGeneratingSuggestion) {
@@ -757,7 +728,7 @@ ${fullTranscription}`;
 
   const checkAndGenerateAutoSummary = async (segments: TranscriptSegment[]) => {
     if (!geminiApiKey.trim()) {
-      if (segments.length > 0 && !chatMessages.some(msg => msg.content.includes('Gemini API key'))) {
+      if (segments.length > 0 && !chatMessages.some(msg => msg.content.includes('🔑 **Setup Required**: Please configure your Gemini API key'))) {
         const apiKeyMessage: ChatMessage = {
           id: `api-key-notice-${Date.now()}`,
           type: 'assistant',
@@ -772,11 +743,10 @@ ${fullTranscription}`;
     const fullTranscription = segments.map(s => s.text).join(' ');
     const totalWords = fullTranscription.split(' ').length;
 
-    // Trigger summary more frequently for testing: every 20 words or 3 segments
+    // Trigger summary more frequently: every 50 words or 5 segments
     const shouldGenerateSummary =
-      totalWords >= lastSummaryLength + 20 ||
-      (segments.length >= 3 && segments.length % 3 === 0 && totalWords > 0);
-
+      totalWords >= lastSummaryLength + 50 ||
+      (segments.length >= 5 && segments.length % 5 === 0 && totalWords > 0);
 
     if (shouldGenerateSummary && !isGeneratingSummary) {
       setIsGeneratingSummary(true);
@@ -864,7 +834,7 @@ ${fullTranscription}`;
 
     setChatMessages(prev => [...prev, userMessage]);
     setChatInput('');
-    setIsTyping(true);
+    setIsTyping(true); // Set isTyping to true when user sends a message, indicating AI processing
 
     generateChatResponse(chatInput, transcript);
   };
@@ -909,7 +879,7 @@ Please provide a helpful, accurate response based on the transcription content. 
       };
       setChatMessages(prev => [...prev, errorMessage]);
     } finally {
-      setIsTyping(false);
+      setIsTyping(false); // Set isTyping to false once response is received or error occurs
     }
   };
 
@@ -1007,10 +977,12 @@ Please provide a helpful, accurate response based on the transcription content. 
                     <span className="text-sm font-medium">Recording</span>
                   </div>
                 )}
-                {connectionStatus === 'connecting' && <span className="text-sm text-yellow-600">Connecting...</span>}
-                {connectionStatus === 'reconnecting' && <span className="text-sm text-yellow-600">Reconnecting...</span>}
-                {connectionStatus === 'disconnected' && !isRecording && <span className="text-sm text-red-600">Disconnected</span>}
-                {connectionStatus === 'error' && <span className="text-sm text-red-600">Connection Error</span>}
+                {/* Connection Status Indicators */}
+                {connectionStatus === 'connecting' && <span className="text-sm text-yellow-600">Connecting STT...</span>}
+                {connectionStatus === 'reconnecting' && <span className="text-sm text-yellow-600">Reconnecting STT...</span>}
+                {connectionStatus === 'disconnected' && !isRecording && <span className="text-sm text-red-600">STT Disconnected</span>}
+                {connectionStatus === 'error' && <span className="text-sm text-red-600">STT Connection Error</span>}
+                {connectionStatus === 'connected' && !isRecording && <span className="text-sm text-green-600">STT Ready</span>}
               </div>
             </div>
 
@@ -1021,9 +993,8 @@ Please provide a helpful, accurate response based on the transcription content. 
                     <Mic className="h-12 w-12 mx-auto mb-4 text-slate-300" />
                     <p className="text-lg">Start recording to see live transcription</p>
                     <p className="text-sm mt-2">Your speech will appear here in real-time</p>
-                    {connectionStatus === 'idle' && <p className="text-xs text-slate-400 mt-1">Connecting to STT service...</p>}
-                    {connectionStatus === 'connected' && <p className="text-xs text-green-500 mt-1">STT Service Ready</p>}
-                    {connectionStatus === 'failed' && <p className="text-xs text-red-500 mt-1">Failed to connect to STT service. Check settings.</p>}
+                    {connectionStatus === 'idle' && <p className="text-xs text-slate-400 mt-1">Initializing STT service...</p>}
+                    {connectionStatus === 'failed' && <p className="text-xs text-red-500 mt-1">Failed to initialize STT service. Check settings/console.</p>}
                   </div>
                 </div>
               ) : (
@@ -1060,6 +1031,16 @@ Please provide a helpful, accurate response based on the transcription content. 
                       <div className="flex-1 text-slate-900 leading-relaxed italic">
                         {currentText}
                         <span className="animate-pulse">|</span>
+                      </div>
+                    </div>
+                  )}
+                  {isSpeechActive && currentText === '' && (
+                    <div className="flex space-x-3 opacity-60">
+                      <div className="flex-shrink-0 text-xs text-slate-500 w-16">
+                        {new Date().toLocaleTimeString()}
+                      </div>
+                      <div className="flex-1 text-slate-900 leading-relaxed italic">
+                        <span className="animate-pulse">...listening...</span>
                       </div>
                     </div>
                   )}
@@ -1148,7 +1129,8 @@ Please provide a helpful, accurate response based on the transcription content. 
                             {isGeneratingSummary && "Generating AI summary..."}
                             {isGeneratingSuggestion && "Generating AI suggestion..."}
                             {isTyping && "Assistant analyzing..."}
-                            {!isGeneratingSummary && !isGeneratingSuggestion && !isTyping && "AI thinking..."} {/* Fallback message */}
+                            {/* Fallback for general AI processing if none of the specific flags are true */}
+                            {!isGeneratingSummary && !isGeneratingSuggestion && !isTyping && "AI thinking..."}
                           </span>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></div>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
@@ -1192,7 +1174,7 @@ Please provide a helpful, accurate response based on the transcription content. 
         onUpdateGeminiApiKey={setGeminiApiKey}
         geminiModel={geminiModel}
         onUpdateGeminiModel={setGeminiModel}
-        // New props for your WebSocket STT configuration
+        // Props for your WebSocket STT configuration
         wsHost={wsHost}
         setWsHost={setWsHost}
         wsPort={wsPort}
@@ -1201,6 +1183,8 @@ Please provide a helpful, accurate response based on the transcription content. 
         setWsLanguage={setWsLanguage}
         wsModel={wsModel}
         setWsModel={setWsModel}
+        wsTask={wsTask}
+        setWsTask={setWsTask}
         wsUseVad={wsUseVad}
         setWsUseVad={setWsUseVad}
         wsMaxConnectionTime={wsMaxConnectionTime}
