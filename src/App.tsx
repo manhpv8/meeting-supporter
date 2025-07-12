@@ -144,8 +144,8 @@ function App() {
 
     // Generate suggestions every 50 words or every 5 segments
     const shouldGenerateSuggestion =
-      totalWords >= lastSuggestionLength + 50 ||
-      (segments.length >= 5 && segments.length % 5 === 0);
+      totalWords >= lastSuggestionLength + 5 ||
+      (segments.length >= 2 && segments.length % 2 === 0);
 
     if (shouldGenerateSuggestion && !isGeneratingSuggestion) {
       setIsGeneratingSuggestion(true);
