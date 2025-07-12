@@ -145,7 +145,6 @@ class TranscriptionWebSocketClient {
       }
       this.socket = null;
       this.isConnected = false;
-      this.isRecording = false;
       this.isInitialConfigSent = false;
       console.log("[WS Client] Explicitly closing WebSocket.");
     }
@@ -304,13 +303,16 @@ const AudioProcessorManager = {
           console.log('[AudioProcessor] VAD: Speech Started.');
 
           this.speechStartTimeout = setTimeout(() => {
-            if (currentVadInstance.speech.active) { // Use captured instance
+            // Add a check for currentVadInstance.speech before accessing 'active'
+            if (currentVadInstance?.speech?.active) { // <-- Safely access 'active'
               const preSpeechBuffer = this.getBufferedAudio();
               const combinedAudio = this.combineBuffers(preSpeechBuffer, this.tempBuffer);
               this.processAndSendAudio(combinedAudio, targetSampleRate, onAudioChunkReady);
               this.lastSendTime = Date.now();
               this.tempBuffer = [];
               console.log('[AudioProcessor] Sent pre-speech buffer after timeout.');
+            } else {
+                console.warn('[AudioProcessor] VAD speech.active was undefined in onSpeechStart timeout.');
             }
             this.speechStartTimeout = null;
           }, 500);
@@ -365,7 +367,8 @@ const AudioProcessorManager = {
           const audioData = event.data.audioData as Float32Array;
           this.appendToBuffer(audioData);
 
-          if (currentVadInstance.speech.active) { // Use captured instance here too!
+          // --- FIX: Safely access 'speech.active' using optional chaining ---
+          if (currentVadInstance?.speech?.active) {
             if (this.speechStartTimeout) {
               this.tempBuffer.push(audioData.slice());
             } else {
@@ -385,6 +388,10 @@ const AudioProcessorManager = {
                 this.lastSendTime = Date.now();
               }
             }
+          } else {
+            // Log if vadInstance or its speech property is unexpectedly undefined/null
+            console.warn('[AudioProcessor] Skipping audio send: VAD instance or speech.active is not ready (onmessage).');
+            // If you want to force sending audio even if VAD isn't active, remove this 'else' block and the 'if' condition.
           }
         }
       };
@@ -397,7 +404,6 @@ const AudioProcessorManager = {
     } catch (error: any) {
       console.error('[AudioProcessor] Full error during setup:', error);
       this.releaseAudioResources();
-      // Rethrow a simplified error for display in UI
       throw new Error(`Unable to start audio capture: ${error.message || 'Unknown error'}. Please ensure you grant microphone permissions and check browser console for details.`);
     }
   },
@@ -815,7 +821,7 @@ ${fullTranscription}`;
         setLastSummaryLength(totalWords);
         console.log('[AI Summary] Auto summary generated successfully.');
       } catch (error) {
-        console.error('[AI Summary] Auto summary error:', error);
+        console.error('Gemini API error for summary:', error);
         const errorMessage: ChatMessage = {
           id: `error-summary-${Date.now()}`,
           type: 'assistant',
