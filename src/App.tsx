@@ -163,7 +163,7 @@ const AudioProcessorManager = {
   lastSendTime: null as number | null,
   nativeSampleRate: null as number | null,
   
-  vadInstance: null as any, // This will store the actual VAD instance
+  vadInstance: null as any, 
   audioContext: null as AudioContext | null,
   audioStream: null as MediaStream | null,
   micSource: null as MediaStreamAudioSourceNode | null,
@@ -290,7 +290,6 @@ const AudioProcessorManager = {
 
       this.initBuffer(this.nativeSampleRate, 3);
 
-      // --- FIX: Capture VAD instance locally to ensure it's defined in callbacks ---
       const currentVadInstance = await vad.MicVAD.new({
         stream: stream,
         sampleRate: this.nativeSampleRate,
@@ -303,8 +302,7 @@ const AudioProcessorManager = {
           console.log('[AudioProcessor] VAD: Speech Started.');
 
           this.speechStartTimeout = setTimeout(() => {
-            // Add a check for currentVadInstance.speech before accessing 'active'
-            if (currentVadInstance?.speech?.active) { // <-- Safely access 'active'
+            if (currentVadInstance?.speech?.active) {
               const preSpeechBuffer = this.getBufferedAudio();
               const combinedAudio = this.combineBuffers(preSpeechBuffer, this.tempBuffer);
               this.processAndSendAudio(combinedAudio, targetSampleRate, onAudioChunkReady);
@@ -312,7 +310,7 @@ const AudioProcessorManager = {
               this.tempBuffer = [];
               console.log('[AudioProcessor] Sent pre-speech buffer after timeout.');
             } else {
-                console.warn('[AudioProcessor] VAD speech.active was undefined in onSpeechStart timeout.');
+                console.warn('[AudioProcessor] VAD speech.active was undefined in onSpeechStart timeout. Will not send pre-speech buffer.');
             }
             this.speechStartTimeout = null;
           }, 500);
@@ -367,8 +365,11 @@ const AudioProcessorManager = {
           const audioData = event.data.audioData as Float32Array;
           this.appendToBuffer(audioData);
 
-          // --- FIX: Safely access 'speech.active' using optional chaining ---
-          if (currentVadInstance?.speech?.active) {
+          // --- FINAL FIX: Always check VAD state, but ensure it's defined ---
+          // Use a flag that gets set when VAD.start() is truly ready,
+          // or rely purely on the VAD callbacks to trigger sends.
+          // For now, let's keep the optional chaining, as it directly solves the TypeError.
+          if (currentVadInstance?.speech?.active) { 
             if (this.speechStartTimeout) {
               this.tempBuffer.push(audioData.slice());
             } else {
@@ -389,9 +390,10 @@ const AudioProcessorManager = {
               }
             }
           } else {
-            // Log if vadInstance or its speech property is unexpectedly undefined/null
-            console.warn('[AudioProcessor] Skipping audio send: VAD instance or speech.active is not ready (onmessage).');
-            // If you want to force sending audio even if VAD isn't active, remove this 'else' block and the 'if' condition.
+            console.warn('[AudioProcessor] VAD not actively detecting speech. Buffering or skipping audio send (onmessage).');
+            // Option 1: If you want to send ALL audio, regardless of VAD, remove the 'if (currentVadInstance?.speech?.active)' condition entirely.
+            // Option 2: If you want to buffer un-sent audio until VAD becomes active, you need a different buffering strategy.
+            // For now, it will only send when VAD is "active".
           }
         }
       };
