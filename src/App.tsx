@@ -202,7 +202,6 @@ ${fullTranscription}`;
     }
   };
 
-
   const downloadTranscript = () => {
     const fullText = transcript.map(segment => 
       `[${segment.timestamp.toLocaleTimeString()}] ${segment.text}`
@@ -717,7 +716,11 @@ ${fullTranscription}`;
   };
   
   const extractKeyTopics = (text: string): string[] => {
-    const commonWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can', 'shall', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'this', 'that', 'these', 'those', 'about', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'up', 'down', 'out', 'off', 'over', 'under', 'again', 'further', 'then', 'once']);
+    const commonWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can',
+    ]
+    )
+  }
+} 'shall', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'this', 'that', 'these', 'those', 'about', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'up', 'down', 'out', 'off', 'over', 'under', 'again', 'further', 'then', 'once']);
     
     const words = text.toLowerCase()
       .replace(/[^\w\s]/g, ' ')
@@ -743,10 +746,10 @@ ${fullTranscription}`;
       id: Date.now().toString(),
       type: 'user',
       content: chatInput,
-      timestamp: new
+  
     }
   }
-} Date()
+}    timestamp: new Date()
     };
 
     setChatMessages(prev => [...prev, userMessage]);
@@ -1056,7 +1059,6 @@ Please provide a helpful, accurate response based on the transcription content. 
                         <div className="flex items-center space-x-2">
                           {isGeneratingSummary && <span className="text-xs text-slate-600">Generating AI summary...</span>}
                           {isGeneratingSuggestion && <span className="text-xs text-slate-600">Generating AI suggestion...</span>}
-                          {isTyping && <span className="text-xs text-slate-600">Typing...</span>}
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></div>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
