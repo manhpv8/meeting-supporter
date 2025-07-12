@@ -202,46 +202,6 @@ ${fullTranscription}`;
     }
   };
 
-  const generateAISuggestion = async (segments: TranscriptSegment[]) => {
-    if (segments.length === 0) return;
-    if (!geminiApiKey.trim()) return;
-    
-    setIsGeneratingSuggestion(true);
-    
-    const fullTranscription = segments.map(s => s.text).join(' ');
-    
-    try {
-      // Use the AI Summary Prompt to extract insights
-      const suggestionPromptText = `${suggestionPrompt}
-
-Please provide specific, actionable suggestions based on the current conversation. Focus on:
-- Key insights that can be extracted
-- Important points that should be noted
-- Potential action items or follow-ups
-- Questions that might arise from the discussion
-
-Keep the response concise (max 150 words) and practical.
-
-Current conversation:
-${fullTranscription}`;
-
-      const suggestion = await callGeminiAPI(fullTranscription, suggestionPromptText);
-      
-      const suggestionMessage: ChatMessage = {
-        id: `auto-suggestion-${Date.now()}`,
-        type: 'assistant',
-        content: `💡 **Auto Suggestion**: ${suggestion}`,
-        timestamp: new Date()
-      };
-      
-      setChatMessages(prev => [...prev, suggestionMessage]);
-    } catch (error) {
-      console.error('Auto suggestion error:', error);
-      // Don't show error messages for auto suggestions to avoid spam
-    } finally {
-      setIsGeneratingSuggestion(false);
-    }
-  };
 
   const downloadTranscript = () => {
     const fullText = transcript.map(segment => 
