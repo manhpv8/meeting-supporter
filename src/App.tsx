@@ -310,7 +310,7 @@ const AudioProcessorManager = {
               this.tempBuffer = [];
               console.log('[AudioProcessor] Sent pre-speech buffer after timeout.');
             } else {
-                console.warn('[AudioProcessor] VAD speech.active was undefined in onSpeechStart timeout. Will not send pre-speech buffer.');
+                console.warn('[AudioProcessor] VAD speech.active was undefined/false in onSpeechStart timeout. Will not send pre-speech buffer.');
             }
             this.speechStartTimeout = null;
           }, 500);
@@ -365,10 +365,8 @@ const AudioProcessorManager = {
           const audioData = event.data.audioData as Float32Array;
           this.appendToBuffer(audioData);
 
-          // --- FINAL FIX: Always check VAD state, but ensure it's defined ---
-          // Use a flag that gets set when VAD.start() is truly ready,
-          // or rely purely on the VAD callbacks to trigger sends.
-          // For now, let's keep the optional chaining, as it directly solves the TypeError.
+          // This is the primary point where we send audio.
+          // It should send whenever the VAD instance indicates active speech.
           if (currentVadInstance?.speech?.active) { 
             if (this.speechStartTimeout) {
               this.tempBuffer.push(audioData.slice());
@@ -390,10 +388,9 @@ const AudioProcessorManager = {
               }
             }
           } else {
-            console.warn('[AudioProcessor] VAD not actively detecting speech. Buffering or skipping audio send (onmessage).');
-            // Option 1: If you want to send ALL audio, regardless of VAD, remove the 'if (currentVadInstance?.speech?.active)' condition entirely.
-            // Option 2: If you want to buffer un-sent audio until VAD becomes active, you need a different buffering strategy.
-            // For now, it will only send when VAD is "active".
+            // Log for debugging: why is VAD not active when audio is coming from worklet?
+            // This might happen right at the start before VAD fully activates, or if no speech is detected.
+            // console.warn('[AudioProcessor] VAD not actively detecting speech. Buffering or skipping audio send (onmessage).'); 
           }
         }
       };
@@ -516,7 +513,7 @@ function App() {
             if (seg.completed) {
                 if (!transcriptQueue.current.includes(seg.text)) {
                     transcriptQueue.current.push(seg.text);
-                    console.log(`[STT Segments] Finalized: "${seg.text}"`);
+                    console.log(`[STT Segments] Finalized: "${seg.text}"`); // Explicit log for finalized transcription
                 }
             } else {
                 newCurrentText = seg.text;
@@ -542,11 +539,11 @@ function App() {
 
         setCurrentText(newCurrentText);
         if (newCurrentText) {
-            console.log(`[STT Segments] Interim: "${newCurrentText}"`);
+            console.log(`[STT Segments] Interim: "${newCurrentText}"`); // Explicit log for interim transcription
         }
         
       } else if (data.type === 'transcription' && data.text) {
-        console.log(`[STT Simple] Received: "${data.text}"`);
+        console.log(`[STT Simple] Received: "${data.text}"`); // Explicit log for simple transcription
         setTranscript(prev => {
           const newSegment: TranscriptSegment = {
             id: `${Date.now()}-${Math.random()}`,
