@@ -1,4 +1,4 @@
-\\\\\\\\\\\\\\\\\\\\\\\\\import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Mic, MicOff, Download, Trash2, Search, Send, Bot, User, Lightbulb, Settings } from 'lucide-react';
 import SettingsModal from './components/SettingsModal';
 
