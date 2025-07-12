@@ -144,6 +144,7 @@ function App() {
   const generateAutoSuggestions = (segments: TranscriptSegment[]) => {
     if (!geminiApiKey.trim()) return;
     if (segments.length === 0) return;
+    if (segments.length === 0) return;
 
     const totalWords = segments.reduce((count, segment) => 
       count + segment.text.split(' ').length, 0
@@ -157,6 +158,47 @@ function App() {
     if (shouldGenerateSuggestion && !isGeneratingSuggestion) {
       generateAISuggestion(segments);
       setLastSuggestionLength(totalWords);
+    }
+  };
+
+  const generateAISuggestion = async (segments: TranscriptSegment[]) => {
+    if (segments.length === 0) return;
+    if (!geminiApiKey.trim()) return;
+    
+    setIsGeneratingSuggestion(true);
+    
+    const fullTranscription = segments.map(s => s.text).join(' ');
+    
+    try {
+      // Use the AI Summary Prompt to extract insights
+      const suggestionPromptText = `${suggestionPrompt}
+
+Please provide specific, actionable suggestions based on the current conversation. Focus on:
+- Key insights that can be extracted
+- Important points that should be noted
+- Potential action items or follow-ups
+- Questions that might arise from the discussion
+
+Keep the response concise (max 150 words) and practical.
+
+Current conversation:
+${fullTranscription}`;
+
+      const suggestion = await callGeminiAPI(fullTranscription, suggestionPromptText);
+      
+      const suggestionMessage: ChatMessage = {
+        id: `auto-suggestion-${Date.now()}`,
+        type: 'assistant',
+        content: `💡 **Auto Suggestion**: ${suggestion}`,
+        timestamp: new Date()
+      };
+      
+      setChatMessages(prev => [...prev, suggestionMessage]);
+    } catch (error) {
+      console.error('Auto suggestion error:', error);
+      // Don't show error messages for auto suggestions to avoid spam
+    } finally {
+      setIsGeneratingSuggestion(false);
     }
   };
 
@@ -1041,6 +1083,7 @@ Please provide a helpful, accurate response based on the transcription content. 
                   ))
                 )}
                 {(isTyping || isGeneratingSummary) && (
+                {(isTyping || isGeneratingSummary || isGeneratingSuggestion) && (
                   <div className="flex justify-start">
                     <div className="flex items-start space-x-2 max-w-[80%]">
                       <div className="flex-shrink-0 w-8 h-8 rounded-full bg-slate-600 flex items-center justify-center">
@@ -1049,6 +1092,7 @@ Please provide a helpful, accurate response based on the transcription content. 
                       <div className="bg-slate-100 rounded-lg px-4 py-2">
                         <div className="flex items-center space-x-2">
                           {isGeneratingSummary && <span className="text-xs text-slate-600">Generating AI summary...</span>}
+                          {isGeneratingSuggestion && <span className="text-xs text-slate-600">Generating AI suggestion...</span>}
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></div>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
