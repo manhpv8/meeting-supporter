@@ -685,7 +685,7 @@ function App() {
     setIsTyping(true);
 
     // Generate AI response using Gemini API
-    generateChatResponse(currentInput, transcript);
+    generateChatResponse(chatInput, transcript);
   };
 
   const generateChatResponse = async (question: string, transcriptSegments: TranscriptSegment[]) => {
