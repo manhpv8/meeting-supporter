@@ -684,48 +684,81 @@ function App() {
     setChatInput('');
     setIsTyping(true);
 
-    // Simulate AI response
-    setTimeout(() => {
-      const response = generateResponse(chatInput, transcript, geminiApiKey);
+    // Generate AI response using Gemini API
+    generateChatResponse(currentInput, transcript);
+  };
+
+  const generateChatResponse = async (question: string, transcriptSegments: TranscriptSegment[]) => {
+    try {
+      let response: string;
+      
+      if (!geminiApiKey.trim()) {
+        response = generateFallbackResponse(question, transcriptSegments);
+      } else {
+        const fullTranscript = transcriptSegments.map(s => s.text).join(' ');
+        const chatPrompt = `You are an AI assistant helping with transcription analysis. 
+
+Context: The user has been recording a conversation/meeting and has the following transcription:
+
+Transcription: "${fullTranscript}"
+
+User Question: "${question}"
+
+Please provide a helpful, accurate response based on the transcription content. If the transcription is empty or the question cannot be answered from the transcription, provide general guidance about transcription analysis.`;
+
+        response = await callGeminiAPI(fullTranscript, chatPrompt);
+      }
+      
       const assistantMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
+        id: `chat-response-${Date.now()}`,
         type: 'assistant',
         content: response,
         timestamp: new Date()
       };
+      
       setChatMessages(prev => [...prev, assistantMessage]);
+    } catch (error) {
+      console.error('Chat response error:', error);
+      const errorMessage: ChatMessage = {
+        id: `chat-error-${Date.now()}`,
+        type: 'assistant',
+        content: `❌ **Error**: Failed to generate response. ${!geminiApiKey.trim() ? 'Please configure your Gemini API key in Settings.' : 'Please check your API key and try again.'}`,
+        timestamp: new Date()
+      };
+      setChatMessages(prev => [...prev, errorMessage]);
+    } finally {
       setIsTyping(false);
-    }, 1500);
+    }
   };
-
-  const generateResponse = (question: string, transcript: TranscriptSegment[], hasGeminiKey: string): string => {
+  const generateFallbackResponse = (question: string, transcript: TranscriptSegment[]): string => {
     const fullText = transcript.map(s => s.text).join(' ').toLowerCase();
     const questionLower = question.toLowerCase();
 
-    if (!hasGeminiKey.trim()) {
-      return "To get more advanced AI responses, please configure your Gemini API key in Settings. I can provide basic analysis of your transcription content.";
+    // Provide basic analysis without Gemini API
+    if (transcript.length === 0) {
+      return "🔑 **Setup Required**: Please configure your Gemini API key in Settings for advanced AI responses. Start recording to build transcription content for analysis.";
     }
 
     if (questionLower.includes('summary') || questionLower.includes('summarize')) {
       const keywords = extractKeyTopics(fullText);
-      return `Based on the transcription, the main topics discussed include: ${keywords.slice(0, 3).join(', ')}. The conversation covered ${transcript.length} segments over ${Math.round((Date.now() - (transcript[0]?.timestamp.getTime() || Date.now())) / 60000)} minutes.`;
+      return `📝 **Basic Summary**: Main topics discussed include: ${keywords.slice(0, 3).join(', ')}. The conversation has ${transcript.length} segments. For detailed AI analysis, please configure your Gemini API key in Settings.`;
     }
 
     if (questionLower.includes('action') || questionLower.includes('todo')) {
-      return "I've identified several potential action items from the transcription. Would you like me to extract specific tasks or commitments mentioned?";
+      return "📋 **Action Items**: I can identify basic action items from the transcription. For detailed AI-powered action item extraction and analysis, please configure your Gemini API key in Settings.";
     }
 
     if (questionLower.includes('key') || questionLower.includes('important')) {
-      return "The key points from the transcription include the main topics discussed and any decisions made. I can help you identify specific important moments if you'd like.";
+      return "🔍 **Key Points**: I can provide basic key point identification. For comprehensive AI analysis of important moments and insights, please configure your Gemini API key in Settings.";
     }
 
     if (questionLower.includes('time') || questionLower.includes('duration')) {
       const duration = transcript.length > 0 ? 
         Math.round((Date.now() - transcript[0].timestamp.getTime()) / 60000) : 0;
-      return `The current session has been running for approximately ${duration} minutes with ${transcript.length} segments recorded.`;
+      return `⏱️ **Session Info**: Current session has been running for approximately ${duration} minutes with ${transcript.length} segments recorded.`;
     }
 
-    return "I can help you analyze the transcription content. You can ask me about summaries, key points, action items, or specific topics mentioned in the conversation.";
+    return "🔑 **Basic Mode**: I can provide basic transcription analysis. For advanced AI-powered responses and detailed insights, please configure your Gemini API key in Settings. You can ask about summaries, key points, action items, or specific topics.";
   };
 
   const highlightText = (text: string, searchTerm: string) => {
