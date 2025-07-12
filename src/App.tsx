@@ -16,12 +16,6 @@ interface ChatMessage {
   timestamp: Date;
 }
 
-interface Suggestion {
-  id: string;
-  content: string;
-  timestamp: Date;
-}
-
 const defaultSuggestionPrompt = 'Based on this conversation, provide helpful insights, key points, action items, and relevant follow-up suggestions.';
 const defaultGeminiModel = 'gemini-1.5-flash';
 
@@ -74,13 +68,13 @@ function App() {
             timestamp: new Date(),
             confidence: event.results[event.results.length - 1][0].confidence
           };
-          setTranscript(prev => [...prev, newSegment]);
+          setTranscript(prev => {
+            const updatedTranscript = [...prev, newSegment];
+            generateAutoSuggestions(updatedTranscript);
+            checkAndGenerateAutoSummary(updatedTranscript);
+            return updatedTranscript;
+          });
           setCurrentText('');
-          
-          const newTranscript = [...transcript, newSegment];
-          generateRealtimeSuggestions(newTranscript, suggestionPrompt);
-          generateAutoSuggestions(newTranscript);
-          checkAndGenerateAutoSummary(newTranscript);
         } else {
           setCurrentText(interimTranscript);
         }
@@ -100,7 +94,7 @@ function App() {
         }
       };
     }
-  }, [isRecording, transcript]);
+  }, [isRecording]); // Removed transcript from dependency array to avoid stale closures with setTranscript callback
 
   useEffect(() => {
     if (transcriptRef.current) {
@@ -141,37 +135,22 @@ function App() {
     setLastSuggestionLength(0);
   };
 
-  const generateAutoSuggestions = (segments: TranscriptSegment[]) => {
+  const generateAutoSuggestions = async (segments: TranscriptSegment[]) => {
     if (!geminiApiKey.trim()) return;
     if (segments.length === 0) return;
-    if (segments.length === 0) return;
 
-    const totalWords = segments.reduce((count, segment) => 
-      count + segment.text.split(' ').length, 0
-    );
-    
-    // Generate suggestions every 50 words or every 5 segments
-    const shouldGenerateSuggestion = 
-      totalWords >= lastSuggestionLength + 50 || 
-      (segments.length >= 5 && segments.length % 5 === 0);
-    
-    if (shouldGenerateSuggestion && !isGeneratingSuggestion) {
-      generateAISuggestion(segments);
-      setLastSuggestionLength(totalWords);
-    }
-  };
-
-  const generateAISuggestion = async (segments: TranscriptSegment[]) => {
-    if (segments.length === 0) return;
-    if (!geminiApiKey.trim()) return;
-    
-    setIsGeneratingSuggestion(true);
-    
     const fullTranscription = segments.map(s => s.text).join(' ');
-    
-    try {
-      // Use the AI Summary Prompt to extract insights
-      const suggestionPromptText = `${suggestionPrompt}
+    const totalWords = fullTranscription.split(' ').length;
+
+    // Generate suggestions every 50 words or every 5 segments
+    const shouldGenerateSuggestion =
+      totalWords >= lastSuggestionLength + 50 ||
+      (segments.length >= 5 && segments.length % 5 === 0);
+
+    if (shouldGenerateSuggestion && !isGeneratingSuggestion) {
+      setIsGeneratingSuggestion(true);
+      try {
+        const suggestionPromptText = `${suggestionPrompt}
 
 Please provide specific, actionable suggestions based on the current conversation. Focus on:
 - Key insights that can be extracted
@@ -184,29 +163,31 @@ Keep the response concise (max 150 words) and practical.
 Current conversation:
 ${fullTranscription}`;
 
-      const suggestion = await callGeminiAPI(fullTranscription, suggestionPromptText);
-      
-      const suggestionMessage: ChatMessage = {
-        id: `auto-suggestion-${Date.now()}`,
-        type: 'assistant',
-        content: `💡 **Auto Suggestion**: ${suggestion}`,
-        timestamp: new Date()
-      };
-      
-      setChatMessages(prev => [...prev, suggestionMessage]);
-    } catch (error) {
-      console.error('Auto suggestion error:', error);
-      // Don't show error messages for auto suggestions to avoid spam
-    } finally {
-      setIsGeneratingSuggestion(false);
+        const suggestion = await callGeminiAPI(fullTranscription, suggestionPromptText);
+
+        const suggestionMessage: ChatMessage = {
+          id: `auto-suggestion-${Date.now()}`,
+          type: 'assistant',
+          content: `💡 **AI Suggestion**: ${suggestion}`,
+          timestamp: new Date()
+        };
+
+        setChatMessages(prev => [...prev, suggestionMessage]);
+        setLastSuggestionLength(totalWords); // Update length after successful generation
+      } catch (error) {
+        console.error('Auto suggestion error:', error);
+        // Don't show error messages for auto suggestions to avoid spam
+      } finally {
+        setIsGeneratingSuggestion(false);
+      }
     }
   };
 
   const downloadTranscript = () => {
-    const fullText = transcript.map(segment => 
+    const fullText = transcript.map(segment =>
       `[${segment.timestamp.toLocaleTimeString()}] ${segment.text}`
     ).join('\n');
-    
+
     const blob = new Blob([fullText], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -216,7 +197,7 @@ ${fullTranscription}`;
     URL.revokeObjectURL(url);
   };
 
-  const checkAndGenerateAutoSummary = (segments: TranscriptSegment[]) => {
+  const checkAndGenerateAutoSummary = async (segments: TranscriptSegment[]) => {
     if (!geminiApiKey.trim()) {
       // Show message about needing API key only once
       if (segments.length === 5 && !chatMessages.some(msg => msg.content.includes('Gemini API key'))) {
@@ -231,57 +212,53 @@ ${fullTranscription}`;
       return;
     }
 
-    const totalWords = segments.reduce((count, segment) => 
-      count + segment.text.split(' ').length, 0
-    );
-    
-    // Generate summary every 100 words or when transcript length doubles
-    const shouldGenerateSummary = 
-      totalWords >= lastSummaryLength + 100 || 
-      (segments.length >= 10 && segments.length % 8 === 0);
-    
-    if (shouldGenerateSummary) {
-      generateGeminiSummary(segments);
-      setLastSummaryLength(totalWords);
-    }
-  };
-
-  const generateGeminiSummary = async (segments: TranscriptSegment[]) => {
-    if (segments.length === 0) return;
-    if (!geminiApiKey.trim()) return;
-    
-    setIsGeneratingSummary(true);
-    
     const fullTranscription = segments.map(s => s.text).join(' ');
-    
-    try {
-      const summary = await callGeminiAPI(fullTranscription, suggestionPrompt);
-      
-      const summaryMessage: ChatMessage = {
-        id: `auto-summary-${Date.now()}`,
-        type: 'assistant',
-        content: `🤖 **AI Summary**: ${summary}`,
-        timestamp: new Date()
-      };
-      
-      setChatMessages(prev => [...prev, summaryMessage]);
-    } catch (error) {
-      console.error('Gemini API error:', error);
-      const errorMessage: ChatMessage = {
-        id: `error-${Date.now()}`,
-        type: 'assistant',
-        content: `❌ **Error**: Failed to generate AI summary. Please check your API key and try again.`,
-        timestamp: new Date()
-      };
-      setChatMessages(prev => [...prev, errorMessage]);
-    } finally {
-      setIsGeneratingSummary(false);
+    const totalWords = fullTranscription.split(' ').length;
+
+    // Generate summary every 100 words or when transcript length doubles
+    const shouldGenerateSummary =
+      totalWords >= lastSummaryLength + 100 ||
+      (segments.length >= 10 && segments.length % 8 === 0);
+
+    if (shouldGenerateSummary && !isGeneratingSummary) {
+      setIsGeneratingSummary(true);
+      try {
+        const summaryPrompt = `${suggestionPrompt}
+
+Please provide a concise summary of the current conversation (max 200 words). Focus on key points, main topics, and any conclusions or decisions.
+
+Current conversation:
+${fullTranscription}`;
+
+        const summary = await callGeminiAPI(fullTranscription, summaryPrompt);
+
+        const summaryMessage: ChatMessage = {
+          id: `auto-summary-${Date.now()}`,
+          type: 'assistant',
+          content: `🤖 **AI Summary**: ${summary}`,
+          timestamp: new Date()
+        };
+
+        setChatMessages(prev => [...prev, summaryMessage]);
+        setLastSummaryLength(totalWords); // Update length after successful generation
+      } catch (error) {
+        console.error('Gemini API error:', error);
+        const errorMessage: ChatMessage = {
+          id: `error-${Date.now()}`,
+          type: 'assistant',
+          content: `❌ **Error**: Failed to generate AI summary. Please check your API key and try again.`,
+          timestamp: new Date()
+        };
+        setChatMessages(prev => [...prev, errorMessage]);
+      } finally {
+        setIsGeneratingSummary(false);
+      }
     }
   };
 
   const callGeminiAPI = async (transcriptionText: string, prompt: string): Promise<string> => {
     const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${geminiApiKey}`;
-    
+
     const requestBody = {
       contents: [{
         parts: [{
@@ -310,433 +287,21 @@ ${fullTranscription}`;
     }
 
     const data = await response.json();
-    
+
     if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
       throw new Error('Invalid response from Gemini API');
     }
-    
+
     return data.candidates[0].content.parts[0].text;
   };
 
-  const generateComprehensiveSummary = (transcriptionText: string, prompt: string): string => {
-    if (!transcriptionText.trim()) return '';
-    
-    const wordCount = transcriptionText.split(' ').length;
-    const topics = extractKeyTopics(transcriptionText);
-    const promptLower = prompt.toLowerCase();
-    
-    // Analyze the prompt to understand what kind of summary is needed
-    let summaryParts: string[] = [];
-    
-    // Add word count and duration info
-    summaryParts.push(`**Transcript Overview**: ${wordCount} words recorded`);
-    
-    // Generate content based on prompt requirements
-    if (promptLower.includes('key point') || promptLower.includes('main point') || promptLower.includes('điểm chính')) {
-      const keyPoints = generateKeyPoints(transcriptionText);
-      if (keyPoints) summaryParts.push(`**Key Points**: ${keyPoints}`);
-    }
-    
-    if (promptLower.includes('action') || promptLower.includes('task') || promptLower.includes('hành động')) {
-      const actionItems = generateActionItemsSummary(transcriptionText);
-      if (actionItems) summaryParts.push(`**Action Items**: ${actionItems}`);
-    }
-    
-    if (promptLower.includes('insight') || promptLower.includes('phân tích') || promptLower.includes('analyze')) {
-      const insights = generateInsightsSummary(transcriptionText);
-      if (insights) summaryParts.push(`**Insights**: ${insights}`);
-    }
-    
-    if (promptLower.includes('decision') || promptLower.includes('quyết định') || promptLower.includes('conclusion')) {
-      const decisions = generateDecisionsSummary(transcriptionText);
-      if (decisions) summaryParts.push(`**Decisions**: ${decisions}`);
-    }
-    
-    if (promptLower.includes('follow up') || promptLower.includes('next step') || promptLower.includes('tiếp theo')) {
-      const followUps = generateFollowUpsSummary(transcriptionText);
-      if (followUps) summaryParts.push(`**Follow-ups**: ${followUps}`);
-    }
-    
-    if (promptLower.includes('question') || promptLower.includes('câu hỏi')) {
-      const questions = generateQuestionsSummary(transcriptionText);
-      if (questions) summaryParts.push(`**Questions**: ${questions}`);
-    }
-    
-    // Always include main topics
-    if (topics.length > 0) {
-      summaryParts.push(`**Main Topics**: ${topics.slice(0, 5).join(', ')}`);
-    }
-    
-    // If no specific requirements found, generate general summary
-    if (summaryParts.length === 1) {
-      const generalSummary = generateGeneralSummary(transcriptionText);
-      summaryParts.push(`**Summary**: ${generalSummary}`);
-    }
-    
-    return summaryParts.join('\n\n');
-  };
-  
-  const generateKeyPoints = (text: string): string => {
-    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 10);
-    const importantSentences = sentences.filter(s => 
-      s.toLowerCase().includes('important') || 
-      s.toLowerCase().includes('key') ||
-      s.toLowerCase().includes('main') ||
-      s.toLowerCase().includes('significant') ||
-      s.toLowerCase().includes('crucial')
-    );
-    
-    if (importantSentences.length > 0) {
-      return importantSentences.slice(0, 3).map(s => `• ${s.trim()}`).join('\n');
-    }
-    
-    // Fallback: get first few substantial sentences
-    return sentences.slice(0, 3).map(s => `• ${s.trim()}`).join('\n');
-  };
-  
-  const generateActionItemsSummary = (text: string): string => {
-    const actionWords = ['need to', 'should', 'must', 'will', 'plan to', 'going to', 'have to', 'decide', 'implement', 'execute'];
-    const sentences = text.split(/[.!?]+/);
-    const actionSentences = sentences.filter(s => 
-      actionWords.some(word => s.toLowerCase().includes(word))
-    );
-    
-    if (actionSentences.length > 0) {
-      return actionSentences.slice(0, 3).map(s => `• ${s.trim()}`).join('\n');
-    }
-    
-    return 'No specific action items identified in current discussion';
-  };
-  
-  const generateInsightsSummary = (text: string): string => {
-    const insights = [];
-    const textLower = text.toLowerCase();
-    
-    if (textLower.includes('problem') || textLower.includes('issue') || textLower.includes('challenge')) {
-      insights.push('Problem-solving discussion detected');
-    }
-    
-    if (textLower.includes('opportunity') || textLower.includes('potential')) {
-      insights.push('Opportunities and potential areas identified');
-    }
-    
-    if (textLower.includes('risk') || textLower.includes('concern')) {
-      insights.push('Risk factors and concerns discussed');
-    }
-    
-    if (textLower.includes('strategy') || textLower.includes('approach')) {
-      insights.push('Strategic approaches and methodologies covered');
-    }
-    
-    const topics = extractKeyTopics(text);
-    if (topics.length > 3) {
-      insights.push(`Multiple interconnected topics: ${topics.slice(0, 3).join(', ')}`);
-    }
-    
-    return insights.length > 0 ? insights.map(i => `• ${i}`).join('\n') : 'General discussion insights being analyzed';
-  };
-  
-  const generateDecisionsSummary = (text: string): string => {
-    const decisionWords = ['decided', 'choose', 'selected', 'agreed', 'concluded', 'determined'];
-    const sentences = text.split(/[.!?]+/);
-    const decisionSentences = sentences.filter(s => 
-      decisionWords.some(word => s.toLowerCase().includes(word))
-    );
-    
-    if (decisionSentences.length > 0) {
-      return decisionSentences.slice(0, 2).map(s => `• ${s.trim()}`).join('\n');
-    }
-    
-    return 'No explicit decisions recorded in current discussion';
-  };
-  
-  const generateFollowUpsSummary = (text: string): string => {
-    const followUpWords = ['next', 'follow up', 'continue', 'schedule', 'plan', 'future'];
-    const sentences = text.split(/[.!?]+/);
-    const followUpSentences = sentences.filter(s => 
-      followUpWords.some(word => s.toLowerCase().includes(word))
-    );
-    
-    if (followUpSentences.length > 0) {
-      return followUpSentences.slice(0, 2).map(s => `• ${s.trim()}`).join('\n');
-    }
-    
-    const topics = extractKeyTopics(text);
-    if (topics.length > 0) {
-      return `• Consider deeper discussion on: ${topics.slice(0, 2).join(', ')}\n• Document and share key findings`;
-    }
-    
-    return '• Review discussion points\n• Schedule follow-up if needed';
-  };
-  
-  const generateQuestionsSummary = (text: string): string => {
-    // Extract actual questions from text
-    const questions = text.split(/[.!]/).filter(s => s.includes('?')).map(s => s.trim());
-    
-    if (questions.length > 0) {
-      return questions.slice(0, 3).map(q => `• ${q}`).join('\n');
-    }
-    
-    // Generate relevant questions based on content
-    const topics = extractKeyTopics(text);
-    const generatedQuestions = [];
-    
-    if (topics.length > 0) {
-      generatedQuestions.push(`What are the next steps regarding ${topics[0]}?`);
-      if (topics.length > 1) {
-        generatedQuestions.push(`How do ${topics[0]} and ${topics[1]} relate?`);
-      }
-    }
-    
-    if (text.toLowerCase().includes('problem') || text.toLowerCase().includes('challenge')) {
-      generatedQuestions.push('What solutions could address the discussed challenges?');
-    }
-    
-    return generatedQuestions.length > 0 ? 
-      generatedQuestions.map(q => `• ${q}`).join('\n') : 
-      '• What are the key takeaways from this discussion?';
-  };
-  
-  const generateGeneralSummary = (text: string): string => {
-    const wordCount = text.split(' ').length;
-    const topics = extractKeyTopics(text);
-    const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 10);
-    
-    let summary = `Discussion covering ${wordCount} words`;
-    
-    if (topics.length > 0) {
-      summary += ` with main focus on ${topics.slice(0, 3).join(', ')}`;
-    }
-    
-    if (sentences.length > 5) {
-      summary += `. Key themes include various aspects of the discussed topics`;
-    }
-    
-    return summary;
-  };
-
-  const generateRealtimeSuggestions = (segments: TranscriptSegment[], prompt: string) => {
-    // Only generate simple suggestions if no Gemini API key
-    if (!geminiApiKey.trim()) {
-      generateSimpleSuggestions(segments, prompt);
-      return;
-    }
-    
-    // Generate advanced suggestions with Gemini API
-    generateGeminiSuggestions(segments, prompt);
-  };
-  
-  const generateSimpleSuggestions = (segments: TranscriptSegment[], prompt: string) => {
-    if (segments.length === 0) return;
-
-    const fullText = segments.map(s => s.text).join(' ');
-    
-    // Generate suggestions when there's enough content
-    if (fullText.length < 50) return;
-    
-    // Generate suggestions every 4 segments to avoid spam
-    if (segments.length % 4 === 0) {
-      const suggestionContent = generatePromptBasedSuggestion(fullText, prompt);
-      
-      if (suggestionContent) {
-        const suggestionMessage: ChatMessage = {
-          id: `suggestion-${Date.now()}`,
-          type: 'assistant',
-          content: `💡 **Suggestion**: ${suggestionContent}`,
-          timestamp: new Date()
-        };
-        
-        setChatMessages(prev => [...prev, suggestionMessage]);
-      }
-    }
-  };
-    
-  const generateGeminiSuggestions = async (segments: TranscriptSegment[], prompt: string) => {
-    if (segments.length === 0) return;
-    
-    const fullText = segments.map(s => s.text).join(' ');
-    
-    // Generate suggestions every 4 segments to avoid spam
-    if (segments.length % 4 === 0 && fullText.length > 50) {
-      try {
-        const suggestionPromptText = `Based on this ongoing conversation, provide a brief helpful suggestion or insight (max 100 words): ${prompt}\n\nCurrent conversation: ${fullText}`;
-        const suggestion = await callGeminiAPI(fullText, suggestionPromptText);
-        
-        const suggestionMessage: ChatMessage = {
-          id: `gemini-suggestion-${Date.now()}`,
-          type: 'assistant',
-          content: `💡 **AI Insight**: ${suggestion}`,
-          timestamp: new Date()
-        };
-        
-        setChatMessages(prev => [...prev, suggestionMessage]);
-      } catch (error) {
-        console.error('Gemini suggestion error:', error);
-      }
-    }
-  };
-  
-  const generatePromptBasedSuggestion = (transcriptionText: string, prompt: string): string | null => {
-    if (!transcriptionText.trim() || !prompt.trim()) return null;
-    
-    const text = transcriptionText.toLowerCase();
-    const promptLower = prompt.toLowerCase();
-    
-    // Analyze what type of suggestions the prompt is asking for
-    if (promptLower.includes('câu hỏi') || promptLower.includes('question')) {
-      return generateQuestions(transcriptionText);
-    }
-    
-    if (promptLower.includes('hành động') || promptLower.includes('action') || promptLower.includes('task')) {
-      return generateActionItems(transcriptionText);
-    }
-    
-    if (promptLower.includes('tóm tắt') || promptLower.includes('summary') || promptLower.includes('key point')) {
-      return generateSummary(transcriptionText);
-    }
-    
-    if (promptLower.includes('insight') || promptLower.includes('phân tích') || promptLower.includes('analyze')) {
-      return generateInsights(transcriptionText);
-    }
-    
-    if (promptLower.includes('follow up') || promptLower.includes('tiếp theo') || promptLower.includes('next step')) {
-      return generateFollowUps(transcriptionText);
-    }
-    
-    // Default: try to understand the prompt and generate accordingly
-    return generateCustomSuggestion(transcriptionText, prompt);
-  };
-  
-  const generateQuestions = (text: string): string => {
-    const topics = extractKeyTopics(text);
-    const questions = [];
-    
-    if (topics.length > 0) {
-      questions.push(`What are the main challenges regarding ${topics[0]}?`);
-      if (topics.length > 1) {
-        questions.push(`How does ${topics[0]} relate to ${topics[1]}?`);
-      }
-    }
-    
-    if (text.includes('problem') || text.includes('issue') || text.includes('challenge')) {
-      questions.push("What potential solutions could address this issue?");
-    }
-    
-    if (questions.length === 0) {
-      questions.push("What are the next steps to consider?");
-    }
-    
-    return questions.slice(0, 2).join(" • ");
-  };
-  
-  const generateActionItems = (text: string): string => {
-    const actions = [];
-    const actionWords = ['need to', 'should', 'must', 'will', 'plan to', 'going to', 'have to', 'decide'];
-    
-    for (const word of actionWords) {
-      if (text.toLowerCase().includes(word)) {
-        const sentences = text.split(/[.!?]+/);
-        const actionSentence = sentences.find(s => s.toLowerCase().includes(word));
-        if (actionSentence) {
-          actions.push(`Action: ${actionSentence.trim()}`);
-          break;
-        }
-      }
-    }
-    
-    if (actions.length === 0) {
-      const topics = extractKeyTopics(text);
-      if (topics.length > 0) {
-        actions.push(`Consider taking action on: ${topics[0]}`);
-      }
-    }
-    
-    return actions.length > 0 ? actions[0] : "Review discussion points and identify next actions";
-  };
-  
-  const generateSummary = (text: string): string => {
-    const topics = extractKeyTopics(text);
-    const wordCount = text.split(' ').length;
-    
-    if (topics.length >= 2) {
-      return `Summary: Discussion covers ${topics.slice(0, 3).join(', ')} (${wordCount} words recorded)`;
-    }
-    
-    return `Summary: ${wordCount} words recorded covering main discussion points`;
-  };
-  
-  const generateInsights = (text: string): string => {
-    const topics = extractKeyTopics(text);
-    const insights = [];
-    
-    if (text.toLowerCase().includes('problem') || text.toLowerCase().includes('challenge')) {
-      insights.push("Problem-solving discussion detected");
-    }
-    
-    if (text.toLowerCase().includes('decision') || text.toLowerCase().includes('choose')) {
-      insights.push("Decision-making process identified");
-    }
-    
-    if (topics.length > 2) {
-      insights.push(`Multiple topics interconnected: ${topics.slice(0, 2).join(' and ')}`);
-    }
-    
-    return insights.length > 0 ? 
-      `Insight: ${insights[0]}` : 
-      `Insight: Key themes emerging from discussion`;
-  };
-  
-  const generateFollowUps = (text: string): string => {
-    const topics = extractKeyTopics(text);
-    
-    if (text.toLowerCase().includes('meeting') || text.toLowerCase().includes('schedule')) {
-      return "Follow-up: Schedule next meeting to continue discussion";
-    }
-    
-    if (text.toLowerCase().includes('research') || text.toLowerCase().includes('investigate')) {
-      return "Follow-up: Conduct additional research on discussed topics";
-    }
-    
-    if (topics.length > 0) {
-      return `Follow-up: Deep dive into ${topics[0]} for more details`;
-    }
-    
-    return "Follow-up: Document key points and share with relevant stakeholders";
-  };
-  
-  const generateCustomSuggestion = (text: string, prompt: string): string => {
-    const topics = extractKeyTopics(text);
-    
-    // Try to match the prompt intent with content
-    if (topics.length > 0) {
-      return `Based on your prompt: "${prompt.slice(0, 50)}..." - Consider: ${topics.slice(0, 2).join(', ')}`;
-    }
-    
-    return `Based on your custom prompt, analyzing: ${text.slice(0, 100)}...`;
-  };
-  
-  const extractKeyTopics = (text: string): string[] => {
-    const commonWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can',
-    ]
-    )
-  }
-} 'shall', 'i', 'you', 'he', 'she', 'it', 'we', 'they', 'this', 'that', 'these', 'those', 'about', 'into', 'through', 'during', 'before', 'after', 'above', 'below', 'up', 'down', 'out', 'off', 'over', 'under', 'again', 'further', 'then', 'once']);
-    
-    const words = text.toLowerCase()
-      .replace(/[^\w\s]/g, ' ')
-      .split(/\s+/)
-      .filter(word => word.length > 3 && !commonWords.has(word));
-    
-    const wordCount = words.reduce((acc, word) => {
-      acc[word] = (acc[word] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
-    
-    return Object.entries(wordCount)
-      .sort(([,a], [,b]) => b - a)
-      .slice(0, 5)
-      .map(([word]) => word);
-  };
+  // Removed all keyword-based summary and suggestion generation functions:
+  // generateComprehensiveSummary, generateKeyPoints, generateActionItemsSummary,
+  // generateInsightsSummary, generateDecisionsSummary, generateFollowUpsSummary,
+  // generateQuestionsSummary, generateGeneralSummary, generateRealtimeSuggestions,
+  // generateSimpleSuggestions, generatePromptBasedSuggestion, generateQuestions,
+  // generateActionItems, generateSummary, generateInsights, generateFollowUps,
+  // generateCustomSuggestion, extractKeyTopics
 
   const handleChatSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -746,10 +311,7 @@ ${fullTranscription}`;
       id: Date.now().toString(),
       type: 'user',
       content: chatInput,
-  
-    }
-  }
-}    timestamp: new Date()
+      timestamp: new Date()
     };
 
     setChatMessages(prev => [...prev, userMessage]);
@@ -762,13 +324,14 @@ ${fullTranscription}`;
 
   const generateChatResponse = async (question: string, transcriptSegments: TranscriptSegment[]) => {
     try {
-      let response: string;
-      
+      let responseContent: string;
+
+      const fullTranscript = transcriptSegments.map(s => s.text).join(' ');
+
       if (!geminiApiKey.trim()) {
-        response = generateFallbackResponse(question, transcriptSegments);
+        responseContent = `🔑 **Setup Required**: Please configure your Gemini API key in Settings for advanced AI responses. You can ask about summaries, key points, or action items based on the current transcription.`;
       } else {
-        const fullTranscript = transcriptSegments.map(s => s.text).join(' ');
-        const chatPrompt = `You are an AI assistant helping with transcription analysis. 
+        const chatPrompt = `You are an AI assistant helping with transcription analysis. Your goal is to provide concise, helpful, and accurate answers based *only* on the provided transcription. If the information isn't in the transcription, state that you don't have enough information from the current conversation.
 
 Context: The user has been recording a conversation/meeting and has the following transcription:
 
@@ -776,18 +339,18 @@ Transcription: "${fullTranscript}"
 
 User Question: "${question}"
 
-Please provide a helpful, accurate response based on the transcription content. If the transcription is empty or the question cannot be answered from the transcription, provide general guidance about transcription analysis.`;
+Please provide a helpful, accurate response based on the transcription content. If the transcription is empty or the question cannot be answered solely from the transcription, state that. Prioritize brevity and direct answers.`;
 
-        response = await callGeminiAPI(fullTranscript, chatPrompt);
+        responseContent = await callGeminiAPI(fullTranscript, chatPrompt);
       }
-      
+
       const assistantMessage: ChatMessage = {
         id: `chat-response-${Date.now()}`,
         type: 'assistant',
-        content: response,
+        content: responseContent,
         timestamp: new Date()
       };
-      
+
       setChatMessages(prev => [...prev, assistantMessage]);
     } catch (error) {
       console.error('Chat response error:', error);
@@ -801,36 +364,6 @@ Please provide a helpful, accurate response based on the transcription content. 
     } finally {
       setIsTyping(false);
     }
-  };
-  const generateFallbackResponse = (question: string, transcript: TranscriptSegment[]): string => {
-    const fullText = transcript.map(s => s.text).join(' ').toLowerCase();
-    const questionLower = question.toLowerCase();
-
-    // Provide basic analysis without Gemini API
-    if (transcript.length === 0) {
-      return "🔑 **Setup Required**: Please configure your Gemini API key in Settings for advanced AI responses. Start recording to build transcription content for analysis.";
-    }
-
-    if (questionLower.includes('summary') || questionLower.includes('summarize')) {
-      const keywords = extractKeyTopics(fullText);
-      return `📝 **Basic Summary**: Main topics discussed include: ${keywords.slice(0, 3).join(', ')}. The conversation has ${transcript.length} segments. For detailed AI analysis, please configure your Gemini API key in Settings.`;
-    }
-
-    if (questionLower.includes('action') || questionLower.includes('todo')) {
-      return "📋 **Action Items**: I can identify basic action items from the transcription. For detailed AI-powered action item extraction and analysis, please configure your Gemini API key in Settings.";
-    }
-
-    if (questionLower.includes('key') || questionLower.includes('important')) {
-      return "🔍 **Key Points**: I can provide basic key point identification. For comprehensive AI analysis of important moments and insights, please configure your Gemini API key in Settings.";
-    }
-
-    if (questionLower.includes('time') || questionLower.includes('duration')) {
-      const duration = transcript.length > 0 ? 
-        Math.round((Date.now() - transcript[0].timestamp.getTime()) / 60000) : 0;
-      return `⏱️ **Session Info**: Current session has been running for approximately ${duration} minutes with ${transcript.length} segments recorded.`;
-    }
-
-    return "🔑 **Basic Mode**: I can provide basic transcription analysis. For advanced AI-powered responses and detailed insights, please configure your Gemini API key in Settings. You can ask about summaries, key points, action items, or specific topics.";
   };
 
   const highlightText = (text: string, searchTerm: string) => {
@@ -854,20 +387,20 @@ Please provide a helpful, accurate response based on the transcription content. 
                 <p className="text-sm text-slate-600">Real-time transcription & AI assistance</p>
               </div>
             </div>
-            
+
             <div className="flex items-center space-x-3">
               <button
                 onClick={isRecording ? stopRecording : startRecording}
                 className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium transition-all ${
-                  isRecording 
-                    ? 'bg-red-600 hover:bg-red-700 text-white shadow-lg' 
+                  isRecording
+                    ? 'bg-red-600 hover:bg-red-700 text-white shadow-lg'
                     : 'bg-blue-600 hover:bg-blue-700 text-white shadow-lg hover:shadow-xl'
                 }`}
               >
                 {isRecording ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
                 <span>{isRecording ? 'Stop Recording' : 'Start Recording'}</span>
               </button>
-              
+
               <button
                 onClick={downloadTranscript}
                 disabled={transcript.length === 0}
@@ -876,16 +409,16 @@ Please provide a helpful, accurate response based on the transcription content. 
                 <Download className="h-4 w-4" />
                 <span>Export</span>
               </button>
-              
+
               <button
-                onClick={clearTranscript}
-                disabled={transcript.length === 0}
+                onClick={clearAll} // Changed to clearAll
+                disabled={transcript.length === 0 && chatMessages.length === 0} // Disable if both empty
                 className="flex items-center space-x-2 px-4 py-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white rounded-lg font-medium transition-all disabled:cursor-not-allowed"
               >
                 <Trash2 className="h-4 w-4" />
-                <span>Clear</span>
+                <span>Clear All</span> {/* Changed text to Clear All */}
               </button>
-              
+
               <button
                 onClick={() => setShowSettings(true)}
                 className="flex items-center space-x-2 px-4 py-2 bg-slate-600 hover:bg-slate-700 text-white rounded-lg font-medium transition-all"
@@ -929,7 +462,7 @@ Please provide a helpful, accurate response based on the transcription content. 
                 )}
               </div>
             </div>
-            
+
             <div ref={transcriptRef} className="flex-1 p-4 overflow-y-auto space-y-3">
               {transcript.length === 0 && !currentText ? (
                 <div className="flex items-center justify-center h-full text-slate-500">
@@ -946,7 +479,7 @@ Please provide a helpful, accurate response based on the transcription content. 
                       <div className="flex-shrink-0 text-xs text-slate-500 w-16">
                         {segment.timestamp.toLocaleTimeString()}
                       </div>
-                      <div 
+                      <div
                         className="flex-1 text-slate-900 leading-relaxed"
                         dangerouslySetInnerHTML={{
                           __html: highlightText(segment.text, searchTerm)
@@ -989,8 +522,8 @@ Please provide a helpful, accurate response based on the transcription content. 
               <div className="p-4 border-b border-slate-200">
                 <h3 className="text-lg font-semibold text-slate-900">AI Assistant</h3>
                 <p className="text-sm text-slate-600">
-                  {geminiApiKey.trim() ? 
-                    'AI-powered suggestions and Q&A about your transcription' : 
+                  {geminiApiKey.trim() ?
+                    'AI-powered suggestions and Q&A about your transcription' :
                     'Configure Gemini API in Settings for advanced AI features'
                   }
                 </p>
@@ -1001,13 +534,13 @@ Please provide a helpful, accurate response based on the transcription content. 
                   </div>
                 )}
               </div>
-              
+
               <div ref={chatRef} className="flex-1 p-4 overflow-y-auto space-y-4">
                 {chatMessages.length === 0 ? (
                   <div className="text-center text-slate-500 py-8">
                     <Bot className="h-8 w-8 mx-auto mb-2 text-slate-300" />
                     <p className="text-sm">
-                      {geminiApiKey.trim() ? 
+                      {geminiApiKey.trim() ?
                         'Start recording to receive real-time AI suggestions!' :
                         'Configure Gemini API key to enable AI features'
                       }
@@ -1020,23 +553,23 @@ Please provide a helpful, accurate response based on the transcription content. 
                         <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
                           message.type === 'user' ? 'bg-blue-600' : 'bg-slate-600'
                         }`}>
-                          {message.type === 'user' ? 
-                            <User className="h-4 w-4 text-white" /> : 
+                          {message.type === 'user' ?
+                            <User className="h-4 w-4 text-white" /> :
                             <Bot className="h-4 w-4 text-white" />
                           }
                         </div>
                         <div className={`rounded-lg px-4 py-2 ${
-                          message.type === 'user' 
-                            ? 'bg-blue-600 text-white' 
-                            : message.content.includes('💡') || message.content.includes('🤖') ? 'bg-blue-50 text-blue-900 border border-blue-200' : 
+                          message.type === 'user'
+                            ? 'bg-blue-600 text-white'
+                            : message.content.includes('💡') || message.content.includes('🤖') ? 'bg-blue-50 text-blue-900 border border-blue-200' :
                               message.content.includes('🔑') ? 'bg-amber-50 text-amber-900 border border-amber-200' :
                               message.content.includes('❌') ? 'bg-red-50 text-red-900 border border-red-200' :
                               'bg-slate-100 text-slate-900'
                         }`}>
                           <div className="text-sm whitespace-pre-wrap">{message.content}</div>
                           <p className={`text-xs mt-1 ${
-                            message.type === 'user' ? 'text-blue-100' : 
-                            message.content.includes('💡') || message.content.includes('🤖') ? 'text-blue-600' : 
+                            message.type === 'user' ? 'text-blue-100' :
+                            message.content.includes('💡') || message.content.includes('🤖') ? 'text-blue-600' :
                             message.content.includes('🔑') ? 'text-amber-600' :
                             message.content.includes('❌') ? 'text-red-600' :
                             'text-slate-500'
@@ -1048,7 +581,6 @@ Please provide a helpful, accurate response based on the transcription content. 
                     </div>
                   ))
                 )}
-                {(isTyping || isGeneratingSummary) && (
                 {(isTyping || isGeneratingSummary || isGeneratingSuggestion) && (
                   <div className="flex justify-start">
                     <div className="flex items-start space-x-2 max-w-[80%]">
@@ -1057,8 +589,8 @@ Please provide a helpful, accurate response based on the transcription content. 
                       </div>
                       <div className="bg-slate-100 rounded-lg px-4 py-2">
                         <div className="flex items-center space-x-2">
-                          {isGeneratingSummary && <span className="text-xs text-slate-600">Generating AI summary...</span>}
-                          {isGeneratingSuggestion && <span className="text-xs text-slate-600">Generating AI suggestion...</span>}
+                          {(isGeneratingSummary || isGeneratingSuggestion) && <span className="text-xs text-slate-600">AI thinking...</span>}
+                          {isTyping && <span className="text-xs text-slate-600">Assistant typing...</span>}
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce"></div>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></div>
                           <div className="w-2 h-2 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
@@ -1068,7 +600,7 @@ Please provide a helpful, accurate response based on the transcription content. 
                   </div>
                 )}
               </div>
-              
+
               <form onSubmit={handleChatSubmit} className="p-4 border-t border-slate-200">
                 <div className="flex space-x-2">
                   <input
@@ -1091,7 +623,7 @@ Please provide a helpful, accurate response based on the transcription content. 
           </div>
         </div>
       </div>
-      
+
       <SettingsModal
         isOpen={showSettings}
         onClose={() => setShowSettings(false)}
