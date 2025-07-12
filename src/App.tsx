@@ -164,7 +164,7 @@ const AudioProcessorManager = {
   processorUrl: null as string | null,
 
   // IMPORTANT: Path to your AudioWorklet processor file in the public directory
-  WORKLET_PROCESSOR_URL: '/audio-sender-processor.js',
+  WORKLET_PROCESSOR_URL: './audio-sender-processor.js',
 
   initBuffer(sampleRate: number, bufferDurationSeconds: number) {
     this.bufferCapacity = sampleRate * bufferDurationSeconds;
