@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Mic, MicOff, Download, Trash2, Settings, Sparkles, Bot, Volume2, VolumeX, Loader2 } from 'lucide-react';
-import { vad } from '@ricky0123/vad-web';
+import vad from '@ricky0123/vad-web';
 import SettingsModal from './components/SettingsModal';
 
 interface TranscriptSegment {
@@ -87,7 +87,7 @@ export default function App() {
     }
 
     setConnectionStatus('connecting');
-    const ws = new WebSocket('ws://localhost:9090');
+    const ws = new WebSocket(`ws://${window.location.hostname}:9090`);
     
     ws.onopen = () => {
       console.log('[STT Server] Connected to WebSocket');
