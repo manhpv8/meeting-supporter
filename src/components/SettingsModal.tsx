@@ -1,190 +1,250 @@
 import React, { useState } from 'react';
-import { X, Save, RotateCcw, Settings, Key, Bot } from 'lucide-react';
+import { Settings } from 'lucide-react';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
+  systemPrompt: string;
+  onUpdateSystemPrompt: (prompt: string) => void;
   suggestionPrompt: string;
-  onUpdatePrompt: (prompt: string) => void;
+  onUpdateSuggestionPrompt: (prompt: string) => void;
+  summaryPrompt: string;
+  onUpdateSummaryPrompt: (prompt: string) => void;
+  summaryTriggerThreshold: number;
+  onUpdateSummaryTriggerThreshold: (threshold: number) => void;
   geminiApiKey: string;
   onUpdateGeminiApiKey: (key: string) => void;
   geminiModel: string;
   onUpdateGeminiModel: (model: string) => void;
+  maxSuggestionsTokens: number; // New prop for max suggestion tokens
+  onUpdateMaxSuggestionsTokens: (tokens: number) => void; // New update function
+  maxSummaryTokens: number; // New prop for max summary tokens
+  onUpdateMaxSummaryTokens: (tokens: number) => void; // New update function
 }
 
-const defaultPrompt = 'Based on this conversation, provide helpful insights, key points, action items, and relevant follow-up suggestions.';
-const defaultModel = 'gemini-1.5-flash';
-
-export default function SettingsModal({ 
-  isOpen, 
-  onClose, 
-  suggestionPrompt, 
-  onUpdatePrompt,
+const SettingsModal: React.FC<SettingsModalProps> = ({
+  isOpen,
+  onClose,
+  systemPrompt,
+  onUpdateSystemPrompt,
+  suggestionPrompt,
+  onUpdateSuggestionPrompt,
+  summaryPrompt,
+  onUpdateSummaryPrompt,
+  summaryTriggerThreshold,
+  onUpdateSummaryTriggerThreshold,
   geminiApiKey,
   onUpdateGeminiApiKey,
   geminiModel,
-  onUpdateGeminiModel
-}: SettingsModalProps) {
-  const [localPrompt, setLocalPrompt] = useState<string>(suggestionPrompt);
-  const [localApiKey, setLocalApiKey] = useState<string>(geminiApiKey);
-  const [localModel, setLocalModel] = useState<string>(geminiModel);
-
+  onUpdateGeminiModel,
+  maxSuggestionsTokens,
+  onUpdateMaxSuggestionsTokens,
+  maxSummaryTokens,
+  onUpdateMaxSummaryTokens,
+}) => {
   if (!isOpen) return null;
 
+  const [activeTab, setActiveTab] = useState('basic'); // 'basic' or 'advanced'
+
   const handleSave = () => {
-    onUpdatePrompt(localPrompt);
-    onUpdateGeminiApiKey(localApiKey);
-    onUpdateGeminiModel(localModel);
+    // Các hàm onUpdate đã lưu vào localStorage, vì vậy chỉ cần đóng modal
     onClose();
   };
 
-  const handleReset = () => {
-    setLocalPrompt(defaultPrompt);
-    setLocalModel(defaultModel);
-  };
-
-  const geminiModels = [
-    'gemini-1.5-flash',
-    'gemini-1.5-pro',
-    'gemini-pro'
-  ];
-
   return (
-    <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between p-6 border-b border-slate-200">
-          <div className="flex items-center space-x-3">
-            <Settings className="h-6 w-6 text-blue-600" />
-            <h2 className="text-xl font-semibold text-slate-900">AI Configuration</h2>
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white p-6 rounded-xl shadow-lg w-full max-w-md">
+        <h3 className="text-xl font-bold mb-4 text-slate-800">Cài đặt</h3>
+
+        {/* Tab Navigation */}
+        <div className="flex border-b border-slate-200 mb-4">
+          <button
+            className={`py-2 px-4 text-sm font-medium ${
+              activeTab === 'basic'
+                ? 'border-b-2 border-blue-600 text-blue-600'
+                : 'text-slate-500 hover:text-blue-600'
+            }`}
+            onClick={() => setActiveTab('basic')}
+          >
+            Cơ bản
+          </button>
+          <button
+            className={`py-2 px-4 text-sm font-medium ${
+              activeTab === 'advanced'
+                ? 'border-b-2 border-blue-600 text-blue-600'
+                : 'text-slate-500 hover:text-blue-600'
+            }`}
+            onClick={() => setActiveTab('advanced')}
+          >
+            Nâng cao
+          </button>
+        </div>
+
+        {/* Basic Tab Content */}
+        {activeTab === 'basic' && (
+          <div>
+            <div className="mb-4">
+              <label htmlFor="geminiApiKey" className="block text-sm font-medium text-slate-700 mb-1">
+                Khóa API Gemini
+              </label>
+              <input
+                type="password"
+                id="geminiApiKey"
+                className="w-full p-2 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                value={geminiApiKey}
+                onChange={(e) => onUpdateGeminiApiKey(e.target.value)}
+                placeholder="Nhập khóa API Gemini của bạn"
+              />
+              <p className="text-xs text-slate-500 mt-1">
+                Bắt buộc để có thông tin chi tiết từ AI. Lấy khóa từ Google AI Studio.
+              </p>
+            </div>
+            <div className="mb-4">
+              <label htmlFor="geminiModel" className="block text-sm font-medium text-slate-700 mb-1">
+                Mô hình Gemini
+              </label>
+              <select
+                id="geminiModel"
+                className="w-full p-2 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                value={geminiModel}
+                onChange={(e) => onUpdateGeminiModel(e.target.value)}
+              >
+                <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+                <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+                {/* Thêm các mô hình khác nếu cần */}
+              </select>
+              <p className="text-xs text-slate-500 mt-1">
+                Chọn mô hình Gemini để tạo AI.
+              </p>
+            </div>
           </div>
+        )}
+
+        {/* Advanced Tab Content */}
+        {activeTab === 'advanced' && (
+          <div>
+            {/* System Prompt (General AI Context) */}
+            <div className="mb-6 pb-4 border-b border-slate-200">
+              <h4 className="text-md font-semibold text-slate-700 mb-2">Lời nhắc hệ thống chung (General System Prompt)</h4>
+              <p className="text-sm text-slate-600 mb-3">
+                Lời nhắc này định nghĩa vai trò và ngữ cảnh tổng thể cho AI.
+              </p>
+              <textarea
+                id="systemPrompt"
+                className="w-full p-2 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                rows={3}
+                value={systemPrompt}
+                onChange={(e) => onUpdateSystemPrompt(e.target.value)}
+                placeholder="Ví dụ: Bạn là một trợ lý họp thông minh."
+              ></textarea>
+            </div>
+
+            {/* Customize Suggestions */}
+            <div className="mb-6 pb-4 border-b border-slate-200">
+              <h4 className="text-md font-semibold text-slate-700 mb-2">Tùy chỉnh Gợi ý (Suggestions)</h4>
+              <p className="text-sm text-slate-600 mb-3">
+                Lời nhắc này hướng dẫn AI tạo các gợi ý phản hồi hoặc câu hỏi nhanh dựa trên các câu gần đây.
+              </p>
+              <textarea
+                id="suggestionPrompt"
+                className="w-full p-2 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                rows={3}
+                value={suggestionPrompt}
+                onChange={(e) => onUpdateSuggestionPrompt(e.target.value)}
+                placeholder="Ví dụ: Dựa trên câu nói gần đây, hãy cung cấp một gợi ý phản hồi hữu ích."
+              ></textarea>
+            </div>
+
+            {/* Customize Summary */}
+            <div className="mb-6 pb-4 border-b border-slate-200">
+              <h4 className="text-md font-semibold text-slate-700 mb-2">Tùy chỉnh Tóm tắt (Summary)</h4>
+              <p className="text-sm text-slate-600 mb-3">
+                Lời nhắc này hướng dẫn AI tạo bản tóm tắt toàn diện về cuộc trò chuyện.
+              </p>
+              <textarea
+                id="summaryPrompt"
+                className="w-full p-2 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                rows={3}
+                value={summaryPrompt}
+                onChange={(e) => onUpdateSummaryPrompt(e.target.value)}
+                placeholder="Ví dụ: Vui lòng tóm tắt các điểm chính của cuộc trò chuyện này."
+              ></textarea>
+            </div>
+
+            {/* Minimum Sentences for Summary */}
+            <div className="mb-4">
+              <h4 className="text-md font-semibold text-slate-700 mb-2">Số câu tối thiểu để Tóm tắt</h4>
+              <p className="text-sm text-slate-600 mb-3">
+                Số lượng câu hoàn chỉnh tối thiểu để AI tự động tạo tóm tắt mới.
+              </p>
+              <input
+                type="number"
+                id="summaryTriggerThreshold"
+                className="w-full p-2 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                value={summaryTriggerThreshold}
+                onChange={(e) => onUpdateSummaryTriggerThreshold(parseInt(e.target.value) || 0)}
+                min="1"
+                placeholder="Ví dụ: 3"
+              />
+            </div>
+
+            {/* Max Suggestions Tokens */}
+            <div className="mb-4">
+              <label htmlFor="maxSuggestionsTokens" className="block text-sm font-medium text-slate-700 mb-1">
+                Số token tối đa cho Gợi ý
+              </label>
+              <input
+                type="number"
+                id="maxSuggestionsTokens"
+                className="w-full p-2 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                value={maxSuggestionsTokens}
+                onChange={(e) => onUpdateMaxSuggestionsTokens(parseInt(e.target.value) || 0)}
+                min="1"
+                placeholder="Ví dụ: 100"
+              />
+              <p className="text-xs text-slate-500 mt-1">
+                Giới hạn số lượng từ (tokens) AI tạo ra cho mỗi gợi ý.
+              </p>
+            </div>
+
+            {/* Max Summary Tokens */}
+            <div className="mb-4">
+              <label htmlFor="maxSummaryTokens" className="block text-sm font-medium text-slate-700 mb-1">
+                Số token tối đa cho Tóm tắt
+              </label>
+              <input
+                type="number"
+                id="maxSummaryTokens"
+                className="w-full p-2 border border-slate-300 rounded-lg focus:ring-blue-500 focus:border-blue-500"
+                value={maxSummaryTokens}
+                onChange={(e) => onUpdateMaxSummaryTokens(parseInt(e.target.value) || 0)}
+                min="1"
+                placeholder="Ví dụ: 500"
+              />
+              <p className="text-xs text-slate-500 mt-1">
+                Giới hạn số lượng từ (tokens) AI tạo ra cho mỗi bản tóm tắt.
+              </p>
+            </div>
+          </div>
+        )}
+
+        <div className="flex justify-end space-x-3 mt-6">
           <button
             onClick={onClose}
-            className="p-2 hover:bg-slate-100 rounded-lg transition-colors"
+            className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-800 rounded-xl font-medium transition-all duration-200"
           >
-            <X className="h-5 w-5 text-slate-500" />
+            Hủy
           </button>
-        </div>
-
-        <div className="p-6 space-y-6">
-          {/* Gemini API Configuration */}
-          <div className="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-4">
-            <div className="flex items-center space-x-2 mb-3">
-              <Bot className="h-5 w-5 text-purple-600" />
-              <h3 className="font-medium text-purple-900">Gemini AI Configuration</h3>
-            </div>
-            <p className="text-sm text-purple-700 mb-4">
-              Configure your Google Gemini API to enable automatic AI-powered summaries and suggestions.
-            </p>
-            
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">
-                  <Key className="h-4 w-4 inline mr-1" />
-                  Gemini API Key
-                </label>
-                <input
-                  type="password"
-                  value={localApiKey}
-                  onChange={(e) => setLocalApiKey(e.target.value)}
-                  placeholder="Enter your Gemini API key..."
-                  className="w-full p-3 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                />
-                <p className="text-xs text-slate-500 mt-1">
-                  Get your API key from <a href="https://makersuite.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-purple-600 hover:underline">Google AI Studio</a>
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-2">
-                  Gemini Model
-                </label>
-                <select
-                  value={localModel}
-                  onChange={(e) => setLocalModel(e.target.value)}
-                  className="w-full p-3 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                >
-                  {geminiModels.map(model => (
-                    <option key={model} value={model}>{model}</option>
-                  ))}
-                </select>
-                <p className="text-xs text-slate-500 mt-1">
-                  Choose the Gemini model for AI processing
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Auto Summary Info */}
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <h3 className="font-medium text-blue-900 mb-2">Auto Summary Feature</h3>
-            <p className="text-sm text-blue-700">
-              When Gemini API is configured, the system will automatically:
-            </p>
-            <ul className="text-sm text-blue-700 mt-2 space-y-1">
-              <li>• Generate comprehensive summaries every 100 words or 8 transcript segments</li>
-              <li>• Create automatic suggestions every 50 words or 5 transcript segments</li>
-              <li>• Extract insights and action items based on your custom prompt</li>
-            </ul>
-          </div>
-
-          <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
-            <h3 className="font-medium text-purple-900 mb-2">Auto Suggestion System</h3>
-            <p className="text-sm text-purple-700">
-              The AI will continuously analyze your transcription and automatically suggest:
-              key insights, action items, important points, and relevant questions based on your custom prompt.
-            </p>
-          </div>
-
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-            <h3 className="font-medium text-green-900 mb-2">How it works</h3>
-            <p className="text-sm text-green-700">
-              Customize the AI prompt to get more relevant suggestions and automatic summaries from your transcriptions. 
-              The AI will use this prompt to analyze the conversation content and generate helpful insights, action items, and comprehensive summaries.
-            </p>
-          </div>
-
-          <div className="space-y-3">
-            <label className="block text-sm font-medium text-slate-700">
-              AI Summary Prompt
-            </label>
-            <textarea
-              value={localPrompt}
-              onChange={(e) => setLocalPrompt(e.target.value)}
-              placeholder="Enter your custom prompt for AI summaries..."
-              className="w-full h-32 p-4 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
-            />
-            <p className="text-xs text-slate-500">
-              This prompt will be used to generate AI summaries based on your transcription content.
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center justify-between p-6 border-t border-slate-200 bg-slate-50">
           <button
-            onClick={handleReset}
-            className="flex items-center space-x-2 px-4 py-2 text-slate-600 hover:text-slate-700 transition-colors"
+            onClick={handleSave}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium transition-all duration-200"
           >
-            <RotateCcw className="h-4 w-4" />
-            <span>Reset to Default</span>
+            Lưu
           </button>
-          
-          <div className="flex items-center space-x-3">
-            <button
-              onClick={onClose}
-              className="px-4 py-2 text-slate-600 hover:text-slate-700 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleSave}
-              className="flex items-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
-            >
-              <Save className="h-4 w-4" />
-              <span>Save Changes</span>
-            </button>
-          </div>
         </div>
       </div>
     </div>
   );
-}
+};
+
+export default SettingsModal;
