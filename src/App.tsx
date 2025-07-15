@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Mic, MicOff, Download, Trash2, Settings, Sparkles, Bot, Volume2, VolumeX, Loader2 } from 'lucide-react';
-import vad from '@ricky0123/vad-web';
 import SettingsModal from './components/SettingsModal';
 
 interface TranscriptSegment {
@@ -18,15 +17,8 @@ interface AISuggestion {
 }
 
 interface STTMessage {
-  uid?: string;
-  message?: string;
-  backend?: string;
-  text?: string;
-  segments?: Array<{
-    text: string;
-    start: number;
-    end: number;
-  }>;
+  type: 'realtime' | 'fullSentence';
+  text: string;
 }
 
 export default function App() {
@@ -35,8 +27,10 @@ export default function App() {
   const [suggestions, setSuggestions] = useState<AISuggestion[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'ready'>('disconnected');
+  const [connectionStatus, setConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
   const [isMuted, setIsMuted] = useState(false);
+  const [realtimeText, setRealtimeText] = useState('');
+  const [fullSentences, setFullSentences] = useState<string[]>([]);
   
   // Settings state
   const [suggestionPrompt, setSuggestionPrompt] = useState(
@@ -45,14 +39,13 @@ export default function App() {
   const [geminiApiKey, setGeminiApiKey] = useState('');
   const [geminiModel, setGeminiModel] = useState('gemini-1.5-flash');
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
   const websocketRef = useRef<WebSocket | null>(null);
-  const vadRef = useRef<any>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const transcriptCountRef = useRef(0);
   const wordCountRef = useRef(0);
+  const serverCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Load settings from localStorage
   useEffect(() => {
@@ -82,53 +75,50 @@ export default function App() {
   };
 
   const connectWebSocket = useCallback(() => {
-    if (websocketRef.current?.readyState === WebSocket.OPEN) {
-      return;
-    }
 
     setConnectionStatus('connecting');
-    const ws = new WebSocket(`ws://${window.location.hostname}:9090`);
+    const ws = new WebSocket("ws://103.164.226.13:8001");
     
     ws.onopen = () => {
-      console.log('[STT Server] Connected to WebSocket');
+      console.log('[STT Server] Connected to WebSocket server');
       setConnectionStatus('connected');
     };
     
     ws.onmessage = (event) => {
       try {
         const data: STTMessage = JSON.parse(event.data);
-        console.log('[STT Server Message]', data);
-        
-        // Handle different message types
-        if (data.message === 'SERVER_READY') {
-          console.log('[STT Server] Server is ready, backend:', data.backend);
-          setConnectionStatus('ready');
-          return;
-        }
-        
-        if (data.text && data.text.trim()) {
-          const newSegment: TranscriptSegment = {
-            id: Date.now().toString(),
-            text: data.text.trim(),
-            timestamp: new Date(),
-            confidence: data.segments?.[0] ? 1.0 : undefined
-          };
+
+        if (data.type === 'realtime') {
+          setRealtimeText(data.text);
+        } else if (data.type === 'fullSentence') {
+          setFullSentences(prev => [...prev, data.text]);
+          setRealtimeText(''); // Clear realtime text
           
-          setTranscript(prev => [...prev, newSegment]);
-          transcriptCountRef.current += 1;
-          wordCountRef.current += data.text.trim().split(' ').length;
-          
-          // Auto-generate suggestions and summaries if API key is available
-          if (geminiApiKey) {
-            // Generate suggestions every 5 segments or 50 words
-            if (transcriptCountRef.current % 5 === 0 || wordCountRef.current >= 50) {
-              generateAISuggestion('suggestion');
-              wordCountRef.current = 0; // Reset word count after suggestion
-            }
+          // Add to transcript
+          if (data.text && data.text.trim()) {
+            const newSegment: TranscriptSegment = {
+              id: Date.now().toString(),
+              text: data.text.trim(),
+              timestamp: new Date(),
+              confidence: 1.0
+            };
             
-            // Generate summary every 8 segments or 100 words
-            if (transcriptCountRef.current % 8 === 0 || wordCountRef.current >= 100) {
-              generateAISuggestion('summary');
+            setTranscript(prev => [...prev, newSegment]);
+            transcriptCountRef.current += 1;
+            wordCountRef.current += data.text.trim().split(' ').length;
+            
+            // Auto-generate suggestions and summaries if API key is available
+            if (geminiApiKey) {
+              // Generate suggestions every 5 segments or 50 words
+              if (transcriptCountRef.current % 5 === 0 || wordCountRef.current >= 50) {
+                generateAISuggestion('suggestion');
+                wordCountRef.current = 0; // Reset word count after suggestion
+              }
+              
+              // Generate summary every 8 segments or 100 words
+              if (transcriptCountRef.current % 8 === 0 || wordCountRef.current >= 100) {
+                generateAISuggestion('summary');
+              }
             }
           }
         }
@@ -140,8 +130,6 @@ export default function App() {
     ws.onclose = () => {
       console.log('[STT Server] WebSocket connection closed');
       setConnectionStatus('disconnected');
-      // Attempt to reconnect after 3 seconds
-      setTimeout(connectWebSocket, 3000);
     };
     
     ws.onerror = (error) => {
@@ -151,6 +139,23 @@ export default function App() {
     
     websocketRef.current = ws;
   }, [geminiApiKey]);
+
+  // Check server availability periodically
+  useEffect(() => {
+    const checkServer = () => {
+      if (connectionStatus === 'disconnected') {
+        connectWebSocket();
+      }
+    };
+
+    serverCheckIntervalRef.current = setInterval(checkServer, 5000);
+
+    return () => {
+      if (serverCheckIntervalRef.current) {
+        clearInterval(serverCheckIntervalRef.current);
+      }
+    };
+  }, [connectionStatus, connectWebSocket]);
 
   const generateAISuggestion = async (type: 'suggestion' | 'summary') => {
     if (!geminiApiKey || transcript.length === 0) return;
@@ -201,51 +206,44 @@ export default function App() {
     }
   };
 
-  const setupAudioWorklet = async (stream: MediaStream) => {
+  const setupAudioProcessing = async (stream: MediaStream) => {
     try {
-      const audioContext = new AudioContext({ sampleRate: 16000 });
-      await audioContext.audioWorklet.addModule('/audio-sender-processor.js');
-      
+      const audioContext = new AudioContext();
       const source = audioContext.createMediaStreamSource(stream);
-      const workletNode = new AudioWorkletNode(audioContext, 'audio-sender-processor');
+      const processor = audioContext.createScriptProcessor(256, 1, 1);
       
-      workletNode.port.onmessage = (event) => {
-        if (websocketRef.current?.readyState === WebSocket.OPEN && !isMuted) {
-          const audioData = event.data.audioData;
-          const buffer = new ArrayBuffer(audioData.length * 4);
-          const view = new Float32Array(buffer);
-          view.set(audioData);
-          websocketRef.current.send(buffer);
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+      
+      processor.onaudioprocess = (e) => {
+        if (!isMuted && websocketRef.current?.readyState === WebSocket.OPEN) {
+          const inputData = e.inputBuffer.getChannelData(0);
+          const outputData = new Int16Array(inputData.length);
+
+          // Convert to 16-bit PCM
+          for (let i = 0; i < inputData.length; i++) {
+            outputData[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
+          }
+
+          // Create a JSON string with metadata
+          const metadata = JSON.stringify({ sampleRate: audioContext.sampleRate });
+          // Convert metadata to a byte array
+          const metadataBytes = new TextEncoder().encode(metadata);
+          // Create a buffer for metadata length (4 bytes for 32-bit integer)
+          const metadataLength = new ArrayBuffer(4);
+          const metadataLengthView = new DataView(metadataLength);
+          // Set the length of the metadata in the first 4 bytes
+          metadataLengthView.setInt32(0, metadataBytes.byteLength, true); // true for little-endian
+          // Combine metadata length, metadata, and audio data into a single message
+          const combinedData = new Blob([metadataLength, metadataBytes, outputData.buffer]);
+          websocketRef.current.send(combinedData);
         }
       };
       
-      source.connect(workletNode);
-      
       audioContextRef.current = audioContext;
-      workletNodeRef.current = workletNode;
+      processorRef.current = processor;
     } catch (error) {
-      console.error('Error setting up audio worklet:', error);
-    }
-  };
-
-  const setupVAD = async (stream: MediaStream) => {
-    try {
-      const vadInstance = await vad({
-        stream,
-        onSpeechStart: () => {
-          console.log('[VAD] Speech started');
-        },
-        onSpeechEnd: () => {
-          console.log('[VAD] Speech ended');
-        },
-        onVADMisfire: () => {
-          console.log('[VAD] VAD misfire');
-        }
-      });
-      
-      vadRef.current = vadInstance;
-    } catch (error) {
-      console.error('Error setting up VAD:', error);
+      console.error('Error setting up audio processing:', error);
     }
   };
 
@@ -255,7 +253,6 @@ export default function App() {
       
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          sampleRate: 16000,
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
@@ -264,8 +261,7 @@ export default function App() {
       
       streamRef.current = stream;
       
-      await setupAudioWorklet(stream);
-      await setupVAD(stream);
+      await setupAudioProcessing(stream);
       
       setIsRecording(true);
     } catch (error) {
@@ -287,17 +283,13 @@ export default function App() {
       audioContextRef.current = null;
     }
     
-    if (vadRef.current) {
-      vadRef.current.destroy();
-      vadRef.current = null;
-    }
-    
     if (websocketRef.current) {
       websocketRef.current.close();
       websocketRef.current = null;
     }
     
-    workletNodeRef.current = null;
+    processorRef.current = null;
+    setRealtimeText('');
   };
 
   const toggleMute = () => {
@@ -307,6 +299,8 @@ export default function App() {
   const clearTranscript = () => {
     setTranscript([]);
     setSuggestions([]);
+    setFullSentences([]);
+    setRealtimeText('');
     transcriptCountRef.current = 0;
     wordCountRef.current = 0;
   };
@@ -335,8 +329,7 @@ export default function App() {
 
   const getConnectionStatusColor = () => {
     switch (connectionStatus) {
-      case 'connected': return 'text-yellow-600';
-      case 'ready': return 'text-green-600';
+      case 'connected': return 'text-green-600';
       case 'connecting': return 'text-blue-600';
       default: return 'text-red-600';
     }
@@ -345,7 +338,6 @@ export default function App() {
   const getConnectionStatusText = () => {
     switch (connectionStatus) {
       case 'connected': return 'Connected';
-      case 'ready': return 'Ready';
       case 'connecting': return 'Connecting...';
       default: return 'Disconnected';
     }
@@ -464,6 +456,37 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="space-y-3">
+                    {/* Display full sentences */}
+                    {fullSentences.map((sentence, index) => (
+                      <div key={`sentence-${index}`} className="group">
+                        <div className="flex items-start space-x-3">
+                          <div className="text-xs text-slate-400 mt-1 min-w-[60px]">
+                            {new Date().toLocaleTimeString()}
+                          </div>
+                          <div className={`flex-1 leading-relaxed ${
+                            index % 2 === 0 ? 'text-yellow-600' : 'text-cyan-600'
+                          }`}>
+                            {sentence}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                    
+                    {/* Display realtime text */}
+                    {realtimeText && (
+                      <div className="group">
+                        <div className="flex items-start space-x-3">
+                          <div className="text-xs text-slate-400 mt-1 min-w-[60px]">
+                            {new Date().toLocaleTimeString()}
+                          </div>
+                          <div className="flex-1 text-slate-500 leading-relaxed italic">
+                            {realtimeText}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Display transcript segments */}
                     {transcript.map((segment) => (
                       <div key={segment.id} className="group">
                         <div className="flex items-start space-x-3">
