@@ -172,7 +172,7 @@ export default function App() {
     }
 
     setConnectionStatus('connecting');
-    const ws = new WebSocket("wss://e8c0f6e29a4b.ngrok-free.app "); // Đảm bảo URL này là chính xác
+    const ws = new WebSocket("wss://5ea6a0d18294.ngrok-free.app"); // Đảm bảo URL này là chính xác
 
     ws.onopen = () => {
       console.log('[STT Server] Đã kết nối tới máy chủ WebSocket');
